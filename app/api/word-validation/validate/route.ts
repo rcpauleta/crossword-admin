@@ -8,6 +8,14 @@ const supabase = createClient(
 
 const BATCH_SIZE = 50
 
+// Helper to remove accents and normalize
+function normalizeText(text: string): string {
+    return text
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
+}
+
 export async function POST(request: NextRequest) {
     try {
         const { languageId } = await request.json() // Remove themeId
@@ -78,43 +86,46 @@ export async function POST(request: NextRequest) {
 INPUT DATA:
 ${JSON.stringify(wordList, null, 2)}
 
-CRITICAL NORMALIZATION RULES:
+YOU MUST PERFORM TWO SEPARATE CHECKS FOR EACH WORD:
+
+CHECK 1 - NORMALIZATION VALIDATION:
 The "normalized" field MUST be the "display" field with these transformations ONLY:
 1. Convert to UPPERCASE
 2. Remove ALL diacritics/accents (á→A, ã→A, ç→C, é→E, í→I, ó→O, ú→U, etc.)
-3. NO other changes allowed (no translation, no spelling changes, no additions)
+3. NO other changes allowed
 
-EXAMPLES OF CORRECT NORMALIZATION:
-- Display: "Circulação" → Normalized: "CIRCULACAO" ✓ VALID
-- Display: "José" → Normalized: "JOSE" ✓ VALID
-- Display: "São Paulo" → Normalized: "SAO PAULO" ✓ VALID
-- Display: "Música" → Normalized: "MUSICA" ✓ VALID
+EXAMPLES:
+✓ Display: "Circulação" → Normalized: "CIRCULACAO" (correct)
+✗ Display: "Circulação" → Normalized: "CIRCULAÇÃO" (wrong - accents not removed)
 
-EXAMPLES OF INCORRECT NORMALIZATION:
-- Display: "Circulação" → Normalized: "CIRCULAÇÃO" ✗ INVALID (accents not removed)
-- Display: "José" → Normalized: "JOSEPH" ✗ INVALID (translation, not normalization)
-- Display: "acordeão" → Normalized: "ACORDEON" ✗ INVALID (should be "ACORDEAO")
+CHECK 2 - WORD VALIDITY:
+Is the "display" text a valid, real word in ${languageName}?
+- Must be a real word that exists in the language dictionary
+- Must be ONE word (no multi-word phrases unless it's a proper compound)
+- No typos, no concatenations, no foreign words
 
-VALIDITY CHECK:
-Also check if "display" is a valid single word in ${languageName}:
-- Must be ONE word (no phrases like "São Paulo" unless it's a proper compound word)
-- No concatenations or non-words
-- No foreign language words
+EXAMPLES FOR PORTUGUESE:
+✓ "Bola" - Valid Portuguese word (means ball)
+✓ "Nata" - Valid Portuguese word (means cream)
+✗ "Seried" - NOT a valid Portuguese word (typo or invalid)
+✗ "Computar" - Valid if it exists, invalid if it doesn't
 
-OUTPUT JSON FORMAT (return for EVERY input word):
+OUTPUT JSON FORMAT:
 [
   {
     "id": 123,
-    "is_valid": true,  // true if normalized matches display with accents removed + uppercase
-    "issue_type": null,  // or "NORMALIZATION_MISMATCH" or "INVALID_WORD"
-    "suggested_fix_normalized": null  // ONLY if normalization is wrong (accents not properly removed)
+    "is_valid": true,  // true ONLY if BOTH checks pass
+    "issue_type": null,  // "NORMALIZATION_MISMATCH" or "INVALID_WORD" or null
+    "suggested_fix_normalized": null  // ONLY for NORMALIZATION_MISMATCH
   }
 ]
 
-IMPORTANT: 
-- If "normalized" correctly removes accents and uppercases "display", mark is_valid: true
-- Only suggest a fix if the normalization is WRONG (e.g., accents not removed, wrong characters)
-- Return exactly ${wordList.length} results in the same order as input`
+DECISION LOGIC:
+- If normalization is wrong → is_valid: false, issue_type: "NORMALIZATION_MISMATCH", suggest correct normalized form
+- If normalization is correct BUT word is not valid in ${languageName} → is_valid: false, issue_type: "INVALID_WORD"
+- If both normalization is correct AND word is valid → is_valid: true, issue_type: null
+
+Return exactly ${wordList.length} results in the same order as input.`
 
         // Call OpenRouter
         const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -160,18 +171,73 @@ IMPORTANT:
         let validCount = 0
         let invalidCount = 0
         let updateErrors = []
+        let autoCorrectedCount = 0
 
         for (const result of validationResults) {
-            const status = result.is_valid ? 'Valid' : 'Invalid'
+            // POST-PROCESSING: Verify AI's decision
+            const originalWord = wordList.find(w => w.id === result.id)
+            if (!originalWord) continue
+
+            const expectedNormalized = normalizeText(originalWord.display)
+            const currentNormalized = originalWord.normalized
+
+            // Determine final validation result
+            let finalIsValid = result.is_valid
+            let finalIssueType = result.issue_type
+            let finalSuggestion = result.suggested_fix_normalized
+
+            // Check if normalization is correct
+            const normalizationCorrect = (currentNormalized === expectedNormalized)
+
+            if (result.issue_type === 'NORMALIZATION_MISMATCH' && normalizationCorrect) {
+                // AI flagged normalization issue, but normalization is actually correct
+                // This means the word itself might be invalid (not a normalization problem)
+                console.log(`Auto-correcting word ${result.id}: Normalization is correct (${currentNormalized}), checking word validity`)
+
+                // If AI still says invalid, it must be because the word itself is invalid
+                if (!result.is_valid) {
+                    finalIssueType = 'INVALID_WORD'
+                    finalSuggestion = null
+                } else {
+                    // Normalization correct and word valid
+                    finalIsValid = true
+                    finalIssueType = null
+                    finalSuggestion = null
+                }
+                autoCorrectedCount++
+            } else if (!normalizationCorrect && result.issue_type === 'NORMALIZATION_MISMATCH') {
+                // AI correctly identified normalization issue
+                finalIsValid = false
+                finalIssueType = 'NORMALIZATION_MISMATCH'
+                finalSuggestion = expectedNormalized
+            } else if (result.issue_type === 'INVALID_WORD') {
+                // AI says word is invalid (not Portuguese) - trust it even if normalization is correct
+                finalIsValid = false
+                finalIssueType = 'INVALID_WORD'
+                finalSuggestion = null
+            } else if (normalizationCorrect && result.is_valid) {
+                // Everything is correct
+                finalIsValid = true
+                finalIssueType = null
+                finalSuggestion = null
+            } else if (normalizationCorrect && !result.is_valid && !result.issue_type) {
+                // Normalization correct but AI says invalid without specifying why
+                // Assume it's an invalid word
+                finalIsValid = false
+                finalIssueType = 'INVALID_WORD'
+                finalSuggestion = null
+            }
+
+            const status = finalIsValid ? 'Valid' : 'Invalid'
             const updateData: any = {
                 status_id: status,
                 last_checked_at: new Date().toISOString()
             }
 
-            if (!result.is_valid) {
-                updateData.issue_type = result.issue_type || 'UNKNOWN'
-                if (result.suggested_fix_normalized) {
-                    updateData.suggested_normalized_fix = result.suggested_fix_normalized
+            if (!finalIsValid) {
+                updateData.issue_type = finalIssueType || 'UNKNOWN'
+                if (finalSuggestion) {
+                    updateData.suggested_normalized_fix = finalSuggestion
                 }
             }
 
@@ -185,11 +251,9 @@ IMPORTANT:
                 console.error(`Failed to update word ${result.id}:`, error)
                 updateErrors.push({ wordId: result.id, error: error.message })
             } else if (!data || data.length === 0) {
-                console.warn(`No rows updated for word ${result.id} - word may not be in queue`)
                 updateErrors.push({ wordId: result.id, error: 'No rows updated' })
             } else {
-                console.log(`Updated word ${result.id} to status ${status}`)
-                if (result.is_valid) {
+                if (finalIsValid) {
                     validCount++
                 } else {
                     invalidCount++
@@ -197,17 +261,14 @@ IMPORTANT:
             }
         }
 
-        console.log(`Validation complete: ${validCount} valid, ${invalidCount} invalid, ${updateErrors.length} errors`)
-
-        if (updateErrors.length > 0) {
-            console.error('Update errors:', updateErrors)
-        }
+        console.log(`Validation complete: ${validCount} valid, ${invalidCount} invalid, ${autoCorrectedCount} auto-corrected, ${updateErrors.length} errors`)
 
         return NextResponse.json({
             success: true,
             validated: validationResults.length,
             valid: validCount,
             invalid: invalidCount,
+            autoCorrected: autoCorrectedCount,
             errors: updateErrors.length > 0 ? updateErrors : undefined
         })
 
