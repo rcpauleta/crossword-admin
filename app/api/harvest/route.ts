@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
         *,
         Theme!inner(id, name, system_instructions, user_prompt, target_word_count),
         Language!inner(ISO, name),
-        Difficulty!inner(id, name, prompt_name, prompt_descri, order)
+        Difficulty!inner(id, name, prompt_name, prompt_description, order)
       `)
             .eq('id', jobId)
             .single()

@@ -13,10 +13,19 @@ type HarvestJob = {
     consecutive_duplicates: number | null
     last_run_at: string | null
     created_at: string
-    Theme: { name: string }
-    Language: { name: string }
-    Difficulty: { name: string }
-    PuzzleConfig?: { target_word_count: number }
+    Theme: {
+        id: number
+        name: string
+        target_word_count: number | null
+    }
+    Language: {
+        ISO: string
+        name: string
+    }
+    Difficulty: {
+        id: string
+        name: string
+    }
 }
 
 export default function HarvestJobsPage() {
@@ -24,6 +33,7 @@ export default function HarvestJobsPage() {
     const [loading, setLoading] = useState(true)
     const [harvestingJobId, setHarvestingJobId] = useState<number | null>(null)
     const [autoRefresh, setAutoRefresh] = useState(true)
+    const [isStartingAll, setIsStartingAll] = useState(false)
 
     // Filter states
     const [searchTerm, setSearchTerm] = useState('')
@@ -56,29 +66,30 @@ export default function HarvestJobsPage() {
     }
 
     async function fetchJobs() {
-        const { data, error } = await supabase
-            .from('HarvestJob')
-            .select(`
-        *,
-        Theme!inner(name),
-        Language!inner(name),
-        Difficulty!inner(name),
-        PuzzleConfig!inner(target_word_count)
-      `)
-            .order('created_at', { ascending: false })
+        try {
+            const { data, error } = await supabase
+                .from('HarvestJob')
+                .select(`
+                *,
+                Theme!inner(id, name, target_word_count),
+                Language!inner(ISO, name),
+                Difficulty!inner(id, name)
+            `)
+                .order('created_at', { ascending: false })
 
-        if (error) {
-            console.error('Error fetching jobs:', error)
-        } else {
-            setJobs(data || [])
-
-            // Disable auto-refresh if no running jobs
-            const hasRunning = data?.some(j => j.status_id === 'Running')
-            if (!hasRunning && autoRefresh) {
-                setAutoRefresh(false)
-            }
+            if (error) throw error
+            setJobs((data as HarvestJob[]) || [])
+        } catch (error) {
+            console.error('Error fetching harvest jobs:', error)
+        } finally {
+            setLoading(false)
         }
-        setLoading(false)
+    }
+
+    function getProgressPercentage(job: HarvestJob): number {
+        if (!job.Theme.target_word_count || job.Theme.target_word_count === 0) return 0
+        const current = job.current_word_count || 0
+        return Math.min(100, (current / job.Theme.target_word_count) * 100)
     }
 
     const filteredJobs = jobs.filter(job => {
@@ -102,7 +113,7 @@ export default function HarvestJobsPage() {
         }
 
         setHarvestingJobId(job.id)
-        setAutoRefresh(true) // Enable auto-refresh during harvest
+        setAutoRefresh(true)
 
         try {
             const response = await fetch('/api/harvest', {
@@ -134,6 +145,41 @@ export default function HarvestJobsPage() {
         }
     }
 
+    async function handleStartAllPending() {
+        const pendingJobs = jobs.filter(j => j.status_id === 'Pending')
+
+        if (pendingJobs.length === 0) {
+            alert('No pending harvest jobs to start')
+            return
+        }
+
+        if (!confirm(`Start ALL ${pendingJobs.length} pending harvest jobs?\n\nThis will process them sequentially and may take a while.`)) {
+            return
+        }
+
+        setIsStartingAll(true)
+
+        try {
+            const response = await fetch('/api/harvest/auto', {
+                method: 'POST',
+            })
+
+            const result = await response.json()
+
+            if (result.success) {
+                alert(`Batch harvest completed!\n\n✓ ${result.completedCount} completed\n⏸ ${result.pausedCount} paused\n✗ ${result.failedCount} failed`)
+                fetchJobs()
+            } else {
+                alert('Batch harvest failed: ' + (result.error || 'Unknown error'))
+            }
+        } catch (error) {
+            console.error('Error starting batch harvest:', error)
+            alert('Error starting batch harvest: ' + String(error))
+        } finally {
+            setIsStartingAll(false)
+        }
+    }
+
     function getStatusColor(status: string) {
         switch (status.toLowerCase()) {
             case 'pending': return 'bg-yellow-600 text-yellow-200'
@@ -142,12 +188,6 @@ export default function HarvestJobsPage() {
             case 'failed': return 'bg-red-600 text-red-200'
             default: return 'bg-gray-600 text-gray-200'
         }
-    }
-
-    function getProgressPercentage(job: HarvestJob) {
-        const target = job.PuzzleConfig?.target_word_count || 100
-        const current = job.current_word_count || 0
-        return Math.min((current / target) * 100, 100)
     }
 
     if (loading) return <div className="p-8 text-gray-400">Loading harvest jobs...</div>
@@ -160,8 +200,8 @@ export default function HarvestJobsPage() {
                     <button
                         onClick={() => setAutoRefresh(!autoRefresh)}
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${autoRefresh
-                                ? 'bg-green-600 text-white hover:bg-green-700'
-                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                            ? 'bg-green-600 text-white hover:bg-green-700'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                             }`}
                     >
                         {autoRefresh ? '🔄 Auto-Refresh ON' : '🔄 Auto-Refresh OFF'}
@@ -173,6 +213,30 @@ export default function HarvestJobsPage() {
                         🔄 Refresh Now
                     </button>
                 </div>
+            </div>
+
+            {/* Start All Button */}
+            <div className="mb-6">
+                <button
+                    onClick={handleStartAllPending}
+                    disabled={isStartingAll || jobs.filter(j => j.status_id === 'Pending').length === 0}
+                    className={`px-6 py-3 rounded-md font-medium transition-colors ${isStartingAll || jobs.filter(j => j.status_id === 'Pending').length === 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                        }`}
+                >
+                    {isStartingAll ? (
+                        <>
+                            <svg className="animate-spin inline-block w-5 h-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Processing All Jobs...
+                        </>
+                    ) : (
+                        <>🚀 Start All Pending Harvests ({jobs.filter(j => j.status_id === 'Pending').length})</>
+                    )}
+                </button>
             </div>
 
             {/* Filters */}
@@ -245,14 +309,14 @@ export default function HarvestJobsPage() {
                                     <div className="flex justify-between text-sm text-gray-400 mb-1">
                                         <span>Words Collected</span>
                                         <span className="font-medium text-white">
-                                            {job.current_word_count || 0} / {job.PuzzleConfig?.target_word_count || 0}
+                                            {job.current_word_count || 0} / {job.Theme.target_word_count || 0}
                                         </span>
                                     </div>
                                     <div className="w-full bg-gray-700 rounded-full h-2">
                                         <div
                                             className={`h-2 rounded-full transition-all duration-300 ${job.status_id === 'Completed' ? 'bg-green-500' :
-                                                    isRunning ? 'bg-blue-500' :
-                                                        job.status_id === 'Failed' ? 'bg-red-500' : 'bg-orange-500'
+                                                isRunning ? 'bg-blue-500' :
+                                                    job.status_id === 'Failed' ? 'bg-red-500' : 'bg-orange-500'
                                                 }`}
                                             style={{ width: `${progress}%` }}
                                         ></div>
@@ -332,4 +396,3 @@ export default function HarvestJobsPage() {
         </div>
     )
 }
-
