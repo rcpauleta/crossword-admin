@@ -11,6 +11,9 @@ type Stats = {
   totalClues: number
   pendingHarvestJobs: number
   completedHarvestJobs: number
+  runningHarvestJobs: number
+  totalHarvestJobWords: number
+  totalHarvestJobTarget: number
 }
 
 export default function DashboardPage() {
@@ -22,12 +25,25 @@ export default function DashboardPage() {
     totalClues: 0,
     pendingHarvestJobs: 0,
     completedHarvestJobs: 0,
+    runningHarvestJobs: 0,
+    totalHarvestJobWords: 0,
+    totalHarvestJobTarget: 0,
   })
   const [loading, setLoading] = useState(true)
+  const [autoRefresh, setAutoRefresh] = useState(true)
 
   useEffect(() => {
     fetchStats()
-  }, [])
+
+    // Auto-refresh every 5 seconds if there are running jobs
+    const interval = setInterval(() => {
+      if (autoRefresh) {
+        fetchStats()
+      }
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [autoRefresh])
 
   async function fetchStats() {
     try {
@@ -39,6 +55,8 @@ export default function DashboardPage() {
         cluesRes,
         pendingJobsRes,
         completedJobsRes,
+        runningJobsRes,
+        harvestJobsRes,
       ] = await Promise.all([
         supabase.from('GeneratedPuzzle').select('id', { count: 'exact', head: true }),
         supabase.from('Language').select('ISO', { count: 'exact', head: true }),
@@ -53,8 +71,30 @@ export default function DashboardPage() {
           .from('HarvestJob')
           .select('id', { count: 'exact', head: true })
           .eq('status_id', 'Completed'),
+        supabase
+          .from('HarvestJob')
+          .select('id', { count: 'exact', head: true })
+          .eq('status_id', 'Running'),
+        supabase
+          .from('HarvestJob')
+          .select('current_word_count, PuzzleConfig(target_word_count)')
       ])
 
+      // Calculate totals from harvest jobs
+      let totalCurrentWords = 0
+      let totalTargetWords = 0
+
+      if (harvestJobsRes.data) {
+        harvestJobsRes.data.forEach((job: any) => {
+          totalCurrentWords += job.current_word_count || 0
+          if (job.PuzzleConfig && Array.isArray(job.PuzzleConfig)) {
+            totalTargetWords += job.PuzzleConfig[0]?.target_word_count || 0
+          }
+        })
+      }
+
+      const hasRunning = (runningJobsRes.count || 0) > 0
+      
       setStats({
         totalPuzzles: puzzlesRes.count || 0,
         totalLanguages: languagesRes.count || 0,
@@ -63,7 +103,15 @@ export default function DashboardPage() {
         totalClues: cluesRes.count || 0,
         pendingHarvestJobs: pendingJobsRes.count || 0,
         completedHarvestJobs: completedJobsRes.count || 0,
+        runningHarvestJobs: runningJobsRes.count || 0,
+        totalHarvestJobWords: totalCurrentWords,
+        totalHarvestJobTarget: totalTargetWords,
       })
+
+      // Disable auto-refresh if no running jobs
+      if (!hasRunning && autoRefresh) {
+        setAutoRefresh(false)
+      }
     } catch (error) {
       console.error('Error fetching stats:', error)
     } finally {
@@ -78,6 +126,10 @@ export default function DashboardPage() {
       </div>
     )
   }
+
+  const harvestProgress = stats.totalHarvestJobTarget > 0 
+    ? (stats.totalHarvestJobWords / stats.totalHarvestJobTarget) * 100 
+    : 0
 
   const statCards = [
     {
@@ -111,14 +163,8 @@ export default function DashboardPage() {
       color: 'from-yellow-600 to-yellow-700',
     },
     {
-      title: 'Pending Harvest Jobs',
-      value: stats.pendingHarvestJobs,
-      icon: '🌾',
-      color: 'from-red-600 to-red-700',
-    },
-    {
-      title: 'Completed Harvest Jobs',
-      value: stats.completedHarvestJobs,
+      title: 'Harvest Jobs',
+      value: `${stats.completedHarvestJobs} done`,
       icon: '✅',
       color: 'from-green-600 to-green-700',
     },
@@ -126,9 +172,21 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2">Dashboard</h1>
-        <p className="text-gray-400">Welcome to Crossword Admin</p>
+      <div className="flex justify-between items-start mb-8">
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2">Dashboard</h1>
+          <p className="text-gray-400">Welcome to Crossword Admin</p>
+        </div>
+        <button
+          onClick={() => setAutoRefresh(!autoRefresh)}
+          className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+            autoRefresh
+              ? 'bg-green-600 text-white hover:bg-green-700'
+              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+          }`}
+        >
+          {autoRefresh ? '🔄 Auto-Refresh ON' : '🔄 Auto-Refresh OFF'}
+        </button>
       </div>
 
       {/* Stats Grid */}
@@ -147,6 +205,62 @@ export default function DashboardPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Harvest Progress Section */}
+      <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-white">🌾 Harvest Progress</h2>
+          {stats.runningHarvestJobs > 0 && (
+            <span className="flex items-center gap-2 text-green-400 text-sm">
+              <span className="animate-pulse">●</span> {stats.runningHarvestJobs} running
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <div className="flex justify-between text-sm text-gray-400 mb-2">
+              <span>Total Words Collected</span>
+              <span className="font-medium text-white">
+                {stats.totalHarvestJobWords} / {stats.totalHarvestJobTarget}
+              </span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-3">
+              <div
+                className={`h-3 rounded-full transition-all duration-500 ${
+                  stats.runningHarvestJobs > 0 ? 'bg-blue-500' : 'bg-green-500'
+                }`}
+                style={{ width: `${Math.min(harvestProgress, 100)}%` }}
+              ></div>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              {harvestProgress.toFixed(0)}% complete
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3 pt-3 border-t border-gray-700">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-yellow-400">{stats.pendingHarvestJobs}</div>
+              <div className="text-xs text-gray-400">Pending</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-blue-400">{stats.runningHarvestJobs}</div>
+              <div className="text-xs text-gray-400">Running</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-green-400">{stats.completedHarvestJobs}</div>
+              <div className="text-xs text-gray-400">Completed</div>
+            </div>
+          </div>
+        </div>
+
+        <a
+          href="/harvest-jobs"
+          className="block mt-4 text-center bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors"
+        >
+          View All Jobs →
+        </a>
       </div>
 
       {/* Quick Actions */}
@@ -192,6 +306,16 @@ export default function DashboardPage() {
                 Harvest Jobs
               </a>{' '}
               to start them.
+            </p>
+          </div>
+        )}
+        {stats.runningHarvestJobs > 0 && (
+          <div className="bg-blue-900 border border-blue-700 rounded-lg p-4">
+            <p className="text-blue-200">
+              🌾{' '}
+              <strong>{stats.runningHarvestJobs}</strong> harvest job
+              {stats.runningHarvestJobs !== 1 ? 's are' : ' is'} currently running. Page
+              auto-refreshing every 5 seconds.
             </p>
           </div>
         )}

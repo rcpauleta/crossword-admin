@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
-import AdminLayout from '../../components/AdminLayout'
-import { callOpenRouter } from '../../lib/openrouter'
 
 type HarvestJob = {
     id: number
@@ -18,24 +16,33 @@ type HarvestJob = {
     Theme: { name: string }
     Language: { name: string }
     Difficulty: { name: string }
-    HarvestStatus: { name: string }
+    PuzzleConfig?: { target_word_count: number }
 }
 
 export default function HarvestJobsPage() {
     const [jobs, setJobs] = useState<HarvestJob[]>([])
     const [loading, setLoading] = useState(true)
+    const [harvestingJobId, setHarvestingJobId] = useState<number | null>(null)
+    const [autoRefresh, setAutoRefresh] = useState(true)
 
     // Filter states
     const [searchTerm, setSearchTerm] = useState('')
     const [filterStatus, setFilterStatus] = useState<string>('all')
     const [statuses, setStatuses] = useState<string[]>([])
 
-    const [harvestingJobId, setHarvestingJobId] = useState<number | null>(null)
-
     useEffect(() => {
         fetchStatuses()
         fetchJobs()
-    }, [])
+
+        // Auto-refresh every 3 seconds if there are running jobs
+        const interval = setInterval(() => {
+            if (autoRefresh) {
+                fetchJobs()
+            }
+        }, 3000)
+
+        return () => clearInterval(interval)
+    }, [autoRefresh])
 
     async function fetchStatuses() {
         const { data } = await supabase
@@ -56,14 +63,20 @@ export default function HarvestJobsPage() {
         Theme!inner(name),
         Language!inner(name),
         Difficulty!inner(name),
-        HarvestStatus!inner(name)
+        PuzzleConfig!inner(target_word_count)
       `)
             .order('created_at', { ascending: false })
 
         if (error) {
-            console.error('Error fetching harvest jobs:', error)
+            console.error('Error fetching jobs:', error)
         } else {
             setJobs(data || [])
+
+            // Disable auto-refresh if no running jobs
+            const hasRunning = data?.some(j => j.status_id === 'Running')
+            if (!hasRunning && autoRefresh) {
+                setAutoRefresh(false)
+            }
         }
         setLoading(false)
     }
@@ -89,6 +102,7 @@ export default function HarvestJobsPage() {
         }
 
         setHarvestingJobId(job.id)
+        setAutoRefresh(true) // Enable auto-refresh during harvest
 
         try {
             const response = await fetch('/api/harvest', {
@@ -101,12 +115,12 @@ export default function HarvestJobsPage() {
 
             if (result.success) {
                 alert(
-                    `Harvest completed successfully!\n\n` +
+                    `Harvest completed!\n\n` +
                     `New words: ${result.stats.newWords}\n` +
-                    `Updated words: ${result.stats.updatedWords}\n` +
                     `Duplicates: ${result.stats.duplicates}\n` +
+                    `Duplicate ratio: ${result.stats.duplicateRatio}\n` +
                     `Total: ${result.stats.totalWords}/${result.stats.targetWords}\n` +
-                    `Status: ${result.stats.isComplete ? 'Completed ✓' : 'Pending (run again)'}`
+                    (result.stats.stopReason ? `Stopped: ${result.stats.stopReason}` : '')
                 )
                 fetchJobs()
             } else {
@@ -122,177 +136,200 @@ export default function HarvestJobsPage() {
 
     function getStatusColor(status: string) {
         switch (status.toLowerCase()) {
-            case 'pending': return 'text-yellow-400'
-            case 'running': return 'text-blue-400'
-            case 'completed': return 'text-green-400'
-            case 'failed': return 'text-red-400'
-            default: return 'text-gray-400'
+            case 'pending': return 'bg-yellow-600 text-yellow-200'
+            case 'running': return 'bg-blue-600 text-blue-200'
+            case 'completed': return 'bg-green-600 text-green-200'
+            case 'failed': return 'bg-red-600 text-red-200'
+            default: return 'bg-gray-600 text-gray-200'
         }
     }
 
-    function getStatusBadgeColor(status: string) {
-        switch (status.toLowerCase()) {
-            case 'pending': return 'bg-yellow-600'
-            case 'running': return 'bg-blue-600'
-            case 'completed': return 'bg-green-600'
-            case 'failed': return 'bg-red-600'
-            default: return 'bg-gray-600'
-        }
+    function getProgressPercentage(job: HarvestJob) {
+        const target = job.PuzzleConfig?.target_word_count || 100
+        const current = job.current_word_count || 0
+        return Math.min((current / target) * 100, 100)
     }
 
-    // Add this function inside the component
-    async function testOpenRouter() {
-        const result = await callOpenRouter(
-            'You are a helpful assistant.',
-            'Say "Hello" and confirm you are working correctly.',
-            'openai/gpt-4o-mini'
-        )
-
-        if (result.success) {
-            alert(`OpenRouter Test Success!\n\nResponse: ${result.content}\n\nTokens: ${result.usage?.total_tokens}`)
-        } else {
-            alert(`OpenRouter Test Failed!\n\nError: ${result.error}`)
-        }
-    }
-
-    if (loading) return <AdminLayout title="Harvest Jobs"><div className="text-gray-400">Loading harvest jobs...</div></AdminLayout>
+    if (loading) return <div className="p-8 text-gray-400">Loading harvest jobs...</div>
 
     return (
-        <AdminLayout title="Harvest Jobs">
-            <div className="max-w-7xl mx-auto">
-                <div className="flex justify-between items-center mb-6">
-                    <h1 className="text-3xl font-bold text-white">Harvest Jobs</h1>
+        <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-8 py-4">
+            <div className="flex justify-between items-center mb-6">
+                <h1 className="text-3xl font-bold text-white">Harvest Jobs</h1>
+                <div className="flex gap-3">
+                    <button
+                        onClick={() => setAutoRefresh(!autoRefresh)}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${autoRefresh
+                                ? 'bg-green-600 text-white hover:bg-green-700'
+                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                            }`}
+                    >
+                        {autoRefresh ? '🔄 Auto-Refresh ON' : '🔄 Auto-Refresh OFF'}
+                    </button>
                     <button
                         onClick={fetchJobs}
-                        className="bg-gray-700 text-white px-6 py-2 rounded-md hover:bg-gray-600 font-medium"
+                        className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600 font-medium"
                     >
-                        🔄 Refresh
+                        🔄 Refresh Now
                     </button>
                 </div>
+            </div>
 
-                {/* Filters */}
-                <div className="bg-gray-800 p-4 rounded-lg mb-6 border border-gray-700">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <input
-                                type="text"
-                                placeholder="🔍 Search by theme, language, or difficulty..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                        </div>
-                        <div>
-                            <select
-                                value={filterStatus}
-                                onChange={(e) => setFilterStatus(e.target.value)}
-                                className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
-                            >
-                                <option value="all">All Statuses</option>
-                                {statuses.map(status => (
-                                    <option key={status} value={status}>{status}</option>
-                                ))}
-                            </select>
-                        </div>
+            {/* Filters */}
+            <div className="bg-gray-800 p-4 rounded-lg mb-6 border border-gray-700">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <input
+                            type="text"
+                            placeholder="🔍 Search by theme, language, or difficulty..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                    </div>
+                    <div>
+                        <select
+                            value={filterStatus}
+                            onChange={(e) => setFilterStatus(e.target.value)}
+                            className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
+                        >
+                            <option value="all">All Statuses</option>
+                            {statuses.map(status => (
+                                <option key={status} value={status}>{status}</option>
+                            ))}
+                        </select>
                     </div>
                 </div>
+            </div>
 
-                <div className="mb-4 text-sm text-gray-400">
-                    Showing {filteredJobs.length} of {jobs.length} jobs
-                </div>
+            <div className="mb-4 text-sm text-gray-400">
+                Showing {filteredJobs.length} of {jobs.length} jobs
+            </div>
 
-                {/* Jobs List */}
-                <div className="bg-gray-800 shadow rounded-lg overflow-hidden border border-gray-700">
-                    {filteredJobs.length === 0 ? (
-                        <div className="p-12 text-center text-gray-400">
-                            {jobs.length === 0 ? 'No harvest jobs yet. Create jobs from the Themes page.' : 'No jobs match your filters.'}
-                        </div>
-                    ) : (
-                        <div className="divide-y divide-gray-700">
-                            {filteredJobs.map((job) => (
-                                <div
-                                    key={job.id}
-                                    className="p-6 hover:bg-gray-700 transition-colors"
-                                >
-                                    <div className="flex justify-between items-start">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-2">
-                                                <h3 className="text-lg font-semibold text-white">
-                                                    {job.Theme.name}
-                                                </h3>
-                                                <span className={`px-2 py-1 ${getStatusBadgeColor(job.status_id)} text-white text-xs rounded font-medium`}>
-                                                    {job.HarvestStatus.name}
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center gap-4 mb-3 text-sm">
-                                                <span className="text-gray-300">
-                                                    🌍 {job.Language.name}
-                                                </span>
-                                                <span className="text-gray-300">
-                                                    ⚡ {job.Difficulty.name}
-                                                </span>
-                                            </div>
-                                            <div className="flex gap-4 text-sm text-gray-500">
-                                                {job.current_word_count !== null && (
-                                                    <span>Words: {job.current_word_count}</span>
-                                                )}
-                                                {job.consecutive_duplicates !== null && (
-                                                    <span>Duplicates: {job.consecutive_duplicates}</span>
-                                                )}
-                                                {job.last_run_at && (
-                                                    <span>Last run: {new Date(job.last_run_at).toLocaleString()}</span>
-                                                )}
-                                                <span className="text-gray-600">
-                                                    Created: {new Date(job.created_at).toLocaleDateString()}
-                                                </span>
-                                            </div>
+            {/* Jobs List */}
+            <div className="space-y-4">
+                {filteredJobs.length === 0 ? (
+                    <div className="p-12 text-center text-gray-400 bg-gray-800 rounded-lg border border-gray-700">
+                        {jobs.length === 0 ? 'No harvest jobs yet. Create jobs from the Themes page.' : 'No jobs match your filters.'}
+                    </div>
+                ) : (
+                    filteredJobs.map((job) => {
+                        const progress = getProgressPercentage(job)
+                        const isRunning = job.status_id === 'Running'
+                        const isHarvesting = harvestingJobId === job.id
+
+                        return (
+                            <div
+                                key={job.id}
+                                className="bg-gray-800 border border-gray-700 rounded-lg p-4 hover:border-gray-600 transition-colors"
+                            >
+                                {/* Header */}
+                                <div className="flex justify-between items-start mb-3">
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-white">
+                                            {job.Theme.name}
+                                        </h3>
+                                        <div className="flex gap-2 text-sm text-gray-400 mt-1">
+                                            <span>🌍 {job.Language.name}</span>
+                                            <span>⚡ {job.Difficulty.name}</span>
                                         </div>
-                                        <div className="ml-4">
-                                            {job.status_id === 'Pending' && (
-                                                <button
-                                                    onClick={() => handleStartHarvest(job)}
-                                                    disabled={harvestingJobId === job.id}
-                                                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm font-medium transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
-                                                >
-                                                    {harvestingJobId === job.id ? (
-                                                        <>
-                                                            <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
-                                                            Harvesting...
-                                                        </>
-                                                    ) : (
-                                                        <>▶️ Start Harvest</>
-                                                    )}
-                                                </button>
-                                            )}
-                                            {job.status_id === 'Running' && (
-                                                <div className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium animate-pulse">
-                                                    ⏳ Running...
-                                                </div>
-                                            )}
-                                            {job.status_id === 'Failed' && (
-                                                <button
-                                                    onClick={() => handleStartHarvest(job)}
-                                                    disabled={harvestingJobId === job.id}
-                                                    className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 text-sm font-medium transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-2"
-                                                >
-                                                    {harvestingJobId === job.id ? (
-                                                        <>
-                                                            <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
-                                                            Retrying...
-                                                        </>
-                                                    ) : (
-                                                        <>🔄 Retry</>
-                                                    )}
-                                                </button>
-                                            )}
+                                    </div>
+                                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(job.status_id)}`}>
+                                        {isRunning && <span className="animate-pulse">● </span>}
+                                        {job.status_id}
+                                    </span>
+                                </div>
+
+                                {/* Progress Bar */}
+                                <div className="mb-3">
+                                    <div className="flex justify-between text-sm text-gray-400 mb-1">
+                                        <span>Words Collected</span>
+                                        <span className="font-medium text-white">
+                                            {job.current_word_count || 0} / {job.PuzzleConfig?.target_word_count || 0}
+                                        </span>
+                                    </div>
+                                    <div className="w-full bg-gray-700 rounded-full h-2">
+                                        <div
+                                            className={`h-2 rounded-full transition-all duration-300 ${job.status_id === 'Completed' ? 'bg-green-500' :
+                                                    isRunning ? 'bg-blue-500' :
+                                                        job.status_id === 'Failed' ? 'bg-red-500' : 'bg-orange-500'
+                                                }`}
+                                            style={{ width: `${progress}%` }}
+                                        ></div>
+                                    </div>
+                                    <div className="text-xs text-gray-500 mt-1">
+                                        {progress.toFixed(0)}% complete
+                                    </div>
+                                </div>
+
+                                {/* Stats */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm mb-3">
+                                    <div className="bg-gray-750 p-2 rounded">
+                                        <div className="text-gray-400">Duplicates</div>
+                                        <div className="text-white font-semibold">{job.consecutive_duplicates || 0}</div>
+                                    </div>
+                                    <div className="bg-gray-750 p-2 rounded">
+                                        <div className="text-gray-400">Last Run</div>
+                                        <div className="text-white font-semibold text-xs">
+                                            {job.last_run_at ? new Date(job.last_run_at).toLocaleTimeString() : 'Never'}
+                                        </div>
+                                    </div>
+                                    <div className="bg-gray-750 p-2 rounded">
+                                        <div className="text-gray-400">Job ID</div>
+                                        <div className="text-white font-semibold">#{job.id}</div>
+                                    </div>
+                                    <div className="bg-gray-750 p-2 rounded">
+                                        <div className="text-gray-400">Created</div>
+                                        <div className="text-white font-semibold text-xs">
+                                            {new Date(job.created_at).toLocaleDateString()}
                                         </div>
                                     </div>
                                 </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
+
+                                {/* Action Button */}
+                                <div className="flex gap-2">
+                                    {job.status_id === 'Pending' && (
+                                        <button
+                                            onClick={() => handleStartHarvest(job)}
+                                            disabled={isHarvesting}
+                                            className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed font-medium transition-colors flex items-center justify-center gap-2"
+                                        >
+                                            {isHarvesting ? (
+                                                <>
+                                                    <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                                                    Harvesting...
+                                                </>
+                                            ) : (
+                                                <>▶️ Start Harvest</>
+                                            )}
+                                        </button>
+                                    )}
+                                    {job.status_id === 'Running' && (
+                                        <div className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md font-medium flex items-center justify-center gap-2">
+                                            <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                                            Running...
+                                        </div>
+                                    )}
+                                    {job.status_id === 'Failed' && (
+                                        <button
+                                            onClick={() => handleStartHarvest(job)}
+                                            className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 font-medium transition-colors"
+                                        >
+                                            🔄 Retry
+                                        </button>
+                                    )}
+                                    {job.status_id === 'Completed' && (
+                                        <div className="flex-1 px-4 py-2 bg-green-600 text-white rounded-md font-medium text-center">
+                                            ✓ Completed
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )
+                    })
+                )}
             </div>
-        </AdminLayout>
+        </div>
     )
 }
+
