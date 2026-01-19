@@ -162,7 +162,6 @@ export async function POST(request: NextRequest) {
 
                 // Stop if too many consecutive duplicates
                 if (consecutiveDuplicates >= MAX_CONSECUTIVE_DUPLICATES) {
-                    console.log(`⚠️ Too many consecutive duplicates (${consecutiveDuplicates}), stopping harvest`)
                     break
                 }
 
@@ -192,7 +191,6 @@ export async function POST(request: NextRequest) {
                     .single()
 
                 if (wordError) {
-                    console.error('Error inserting word:', wordError)
                     continue
                 }
 
@@ -263,7 +261,6 @@ export async function POST(request: NextRequest) {
                 }
             })
         } catch (error: any) {
-            console.error('Harvest error:', error)
 
             try {
                 const { jobId } = await request.json()

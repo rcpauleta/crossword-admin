@@ -34,6 +34,7 @@ export default function HarvestJobsPage() {
     const [harvestingJobId, setHarvestingJobId] = useState<number | null>(null)
     const [autoRefresh, setAutoRefresh] = useState(true)
     const [isStartingAll, setIsStartingAll] = useState(false)
+    const [isPopulatingAll, setIsPopulatingAll] = useState(false)
 
     // Filter states
     const [searchTerm, setSearchTerm] = useState('')
@@ -125,13 +126,29 @@ export default function HarvestJobsPage() {
             const result = await response.json()
 
             if (result.success) {
+                // Automatically populate validation queue for new words
+                try {
+                    await fetch('/api/word-validation/populate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            themeId: job.theme_id,
+                            languageId: job.language_id
+                        })
+                    })
+                } catch (validationError) {
+                    console.error('Error auto-populating validation queue:', validationError)
+                    // Don't fail the harvest if validation population fails
+                }
+
                 alert(
                     `Harvest completed!\n\n` +
                     `New words: ${result.stats.newWords}\n` +
                     `Duplicates: ${result.stats.duplicates}\n` +
                     `Duplicate ratio: ${result.stats.duplicateRatio}\n` +
                     `Total: ${result.stats.totalWords}/${result.stats.targetWords}\n` +
-                    (result.stats.stopReason ? `Stopped: ${result.stats.stopReason}` : '')
+                    (result.stats.stopReason ? `Stopped: ${result.stats.stopReason}` : '') +
+                    `\n\n✓ Words added to validation queue`
                 )
                 fetchJobs()
             } else {
@@ -180,6 +197,71 @@ export default function HarvestJobsPage() {
         }
     }
 
+    async function handlePopulateAllValidation() {
+        const completedJobs = jobs.filter(j => j.status_id === 'Completed')
+
+        if (completedJobs.length === 0) {
+            alert('No completed harvest jobs to populate')
+            return
+        }
+
+        // Get unique theme/language combinations
+        const uniqueCombos = new Map<string, { themeId: number, languageId: string, themeName: string, langName: string }>()
+        for (const job of completedJobs) {
+            const key = `${job.theme_id}_${job.language_id}`
+            if (!uniqueCombos.has(key)) {
+                uniqueCombos.set(key, {
+                    themeId: job.theme_id,
+                    languageId: job.language_id,
+                    themeName: job.Theme.name,
+                    langName: job.Language.name
+                })
+            }
+        }
+
+        if (!confirm(`Populate validation queue for ${uniqueCombos.size} theme/language combinations?`)) {
+            return
+        }
+
+        setIsPopulatingAll(true)
+        let totalQueued = 0
+        let totalSkipped = 0
+        let errors = 0
+
+        try {
+            for (const combo of uniqueCombos.values()) {
+                try {
+                    const response = await fetch('/api/word-validation/populate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            themeId: combo.themeId,
+                            languageId: combo.languageId
+                        })
+                    })
+
+                    const result = await response.json()
+                    if (result.success) {
+                        totalQueued += result.queued
+                        totalSkipped += result.skipped
+                    } else {
+                        errors++
+                    }
+                } catch (error) {
+                    console.error(`Error populating ${combo.themeName} - ${combo.langName}:`, error)
+                    errors++
+                }
+            }
+
+            alert(`Validation queue population complete!\n\n✓ ${totalQueued} words queued\n↷ ${totalSkipped} already queued\n${errors > 0 ? `✗ ${errors} errors` : ''}`)
+        } catch (error) {
+            console.error('Error during batch populate:', error)
+            alert('Error: ' + String(error))
+        } finally {
+            setIsPopulatingAll(false)
+        }
+    }
+
     function getStatusColor(status: string) {
         switch (status.toLowerCase()) {
             case 'pending': return 'bg-yellow-600 text-yellow-200'
@@ -215,12 +297,12 @@ export default function HarvestJobsPage() {
                 </div>
             </div>
 
-            {/* Start All Button */}
-            <div className="mb-6">
+            {/* Start All & Populate All Buttons */}
+            <div className="mb-6 flex gap-3">
                 <button
                     onClick={handleStartAllPending}
                     disabled={isStartingAll || jobs.filter(j => j.status_id === 'Pending').length === 0}
-                    className={`px-6 py-3 rounded-md font-medium transition-colors ${isStartingAll || jobs.filter(j => j.status_id === 'Pending').length === 0
+                    className={`flex-1 px-6 py-3 rounded-md font-medium transition-colors ${isStartingAll || jobs.filter(j => j.status_id === 'Pending').length === 0
                         ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                         : 'bg-blue-600 text-white hover:bg-blue-700'
                         }`}
@@ -235,6 +317,27 @@ export default function HarvestJobsPage() {
                         </>
                     ) : (
                         <>🚀 Start All Pending Harvests ({jobs.filter(j => j.status_id === 'Pending').length})</>
+                    )}
+                </button>
+
+                <button
+                    onClick={handlePopulateAllValidation}
+                    disabled={isPopulatingAll || jobs.filter(j => j.status_id === 'Completed').length === 0}
+                    className={`flex-1 px-6 py-3 rounded-md font-medium transition-colors ${isPopulatingAll || jobs.filter(j => j.status_id === 'Completed').length === 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-purple-600 text-white hover:bg-purple-700'
+                        }`}
+                >
+                    {isPopulatingAll ? (
+                        <>
+                            <svg className="animate-spin inline-block w-5 h-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Populating Validation...
+                        </>
+                    ) : (
+                        <>✓ Populate All Validation Queues</>
                     )}
                 </button>
             </div>

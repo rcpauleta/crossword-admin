@@ -29,6 +29,7 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
     { name: 'Puzzle Configs', href: '/puzzle-configs', icon: '⚙️' },
     { name: 'Generated Puzzles', href: '/puzzles', icon: '🧩' },
     { name: 'Harvest Jobs', href: '/harvest-jobs', icon: '🌾' },
+    { name: 'Word Validations', href: '/word-validation', icon: '✅' },
   ]
 
   function handleLogout() {
