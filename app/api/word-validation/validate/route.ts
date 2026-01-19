@@ -10,9 +10,9 @@ const BATCH_SIZE = 50
 
 export async function POST(request: NextRequest) {
     try {
-        const { themeId, languageId } = await request.json()
+        const { languageId } = await request.json() // Remove themeId
 
-        // Get pending validation items for this theme+language
+        // Get pending validation items for this language (no theme filtering)
         const { data: queueItems, error: queueError } = await supabase
             .from('WordValidationQueue')
             .select(`
@@ -22,22 +22,30 @@ export async function POST(request: NextRequest) {
                     normalized_text,
                     display_text,
                     language_id,
-                    Language!inner(ISO, name),
-                    Word_Theme!inner(theme_id)
+                    Language!inner(ISO, name)
                 )
             `)
             .eq('status_id', 'Pending')
             .eq('Word.language_id', languageId)
-            .limit(BATCH_SIZE)
+            .limit(BATCH_SIZE) as {
+                data: Array<{
+                    word_id: number;
+                    Word: {
+                        id: number;
+                        normalized_text: string;
+                        display_text: string;
+                        language_id: number;
+                        Language: {
+                            ISO: string;
+                            name: string;
+                        };
+                    };
+                }> | null; error: any
+            }
 
         if (queueError) throw queueError
 
-        // Filter to only items that belong to this theme
-        const filteredItems = (queueItems as any[]).filter(item =>
-            item.Word.Word_Theme.some((wt: any) => wt.theme_id === themeId)
-        )
-
-        if (filteredItems.length === 0) {
+        if (!queueItems || queueItems.length === 0) {
             return NextResponse.json({
                 success: true,
                 message: 'No pending words to validate',
@@ -46,21 +54,21 @@ export async function POST(request: NextRequest) {
         }
 
         // Mark as InProgress
-        const wordIds = filteredItems.map(item => item.word_id)
+        const wordIds = queueItems.map(item => item.word_id)
         await supabase
             .from('WordValidationQueue')
             .update({ status_id: 'InProgress', last_checked_at: new Date().toISOString() })
             .in('word_id', wordIds)
 
         // Prepare word list for AI
-        const wordList = filteredItems.map(item => ({
+        const wordList = queueItems.map((item: any) => ({
             id: item.Word.id,
             normalized: item.Word.normalized_text,
             display: item.Word.display_text
         }))
 
-        const languageISO = filteredItems[0].Word.Language.ISO
-        const languageName = filteredItems[0].Word.Language.name
+        const languageISO = queueItems[0].Word.Language.ISO
+        const languageName = queueItems[0].Word.Language.name
 
         // Build validation prompt
         const systemPrompt = "You are a strict Data Quality Auditor for a crossword puzzle database. Your job is to validate that word entries follow normalization rules. You do NOT create new content. You only verify and report issues."
@@ -70,27 +78,43 @@ export async function POST(request: NextRequest) {
 INPUT DATA:
 ${JSON.stringify(wordList, null, 2)}
 
-VALIDATION RULES:
-1. NORMALIZATION CHECK:
-   - "normalized" MUST equal "display" with ALL accents removed and UPPERCASE.
-   - NO translation or spelling changes allowed.
-   - Example Error: Display "Acordeão" -> Norm "ACORDEON" (Expected "ACORDEAO").
+CRITICAL NORMALIZATION RULES:
+The "normalized" field MUST be the "display" field with these transformations ONLY:
+1. Convert to UPPERCASE
+2. Remove ALL diacritics/accents (á→A, ã→A, ç→C, é→E, í→I, ó→O, ú→U, etc.)
+3. NO other changes allowed (no translation, no spelling changes, no additions)
 
-2. VALIDITY CHECK:
-   - "display" must be a valid single word in ${languageName}.
-   - No phrases, concatenations, or foreign words.
+EXAMPLES OF CORRECT NORMALIZATION:
+- Display: "Circulação" → Normalized: "CIRCULACAO" ✓ VALID
+- Display: "José" → Normalized: "JOSE" ✓ VALID
+- Display: "São Paulo" → Normalized: "SAO PAULO" ✓ VALID
+- Display: "Música" → Normalized: "MUSICA" ✓ VALID
 
-OUTPUT JSON FORMAT:
+EXAMPLES OF INCORRECT NORMALIZATION:
+- Display: "Circulação" → Normalized: "CIRCULAÇÃO" ✗ INVALID (accents not removed)
+- Display: "José" → Normalized: "JOSEPH" ✗ INVALID (translation, not normalization)
+- Display: "acordeão" → Normalized: "ACORDEON" ✗ INVALID (should be "ACORDEAO")
+
+VALIDITY CHECK:
+Also check if "display" is a valid single word in ${languageName}:
+- Must be ONE word (no phrases like "São Paulo" unless it's a proper compound word)
+- No concatenations or non-words
+- No foreign language words
+
+OUTPUT JSON FORMAT (return for EVERY input word):
 [
   {
     "id": 123,
-    "is_valid": boolean,
-    "issue_type": "NORMALIZATION_MISMATCH" | "INVALID_WORD" | null,
-    "suggested_fix_normalized": "CORRECTED_TEXT"
+    "is_valid": true,  // true if normalized matches display with accents removed + uppercase
+    "issue_type": null,  // or "NORMALIZATION_MISMATCH" or "INVALID_WORD"
+    "suggested_fix_normalized": null  // ONLY if normalization is wrong (accents not properly removed)
   }
 ]
 
-IMPORTANT: Return a result object for EVERY input item. The output list length must match the input list length.`
+IMPORTANT: 
+- If "normalized" correctly removes accents and uppercases "display", mark is_valid: true
+- Only suggest a fix if the normalization is WRONG (e.g., accents not removed, wrong characters)
+- Return exactly ${wordList.length} results in the same order as input`
 
         // Call OpenRouter
         const openRouterResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {

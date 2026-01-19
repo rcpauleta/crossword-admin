@@ -4,9 +4,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 
 type ValidationStats = {
-    theme_id: number
     language_id: string
-    theme_name: string
     language_name: string
     total_words: number
     pending: number
@@ -14,6 +12,7 @@ type ValidationStats = {
     valid: number
     invalid: number
     fixed: number
+    wontfix: number
     last_checked: string | null
 }
 
@@ -36,59 +35,52 @@ export default function WordValidationPage() {
             const { data, error } = await supabase
                 .from('WordValidationQueue')
                 .select(`
-                    word_id,
-                    status_id,
-                    last_checked_at,
-                    Word!inner(
-                        id,
-                        language_id,
-                        Language!inner(ISO, name),
-                        Word_Theme!inner(
-                            theme_id,
-                            Theme!inner(id, name)
-                        )
-                    )
-                `)
+                word_id,
+                status_id,
+                last_checked_at,
+                Word!inner(
+                    id,
+                    language_id,
+                    Language!inner(ISO, name)
+                )
+            `)
 
             if (error) throw error
 
-            // Flatten and group by theme + language
+            // Group by language only
             const grouped: Record<string, ValidationStats> = {}
 
             for (const item of (data as any[])) {
-                // Handle multiple themes per word
-                for (const wt of item.Word.Word_Theme) {
-                    const key = `${wt.theme_id}_${item.Word.language_id}`
+                const key = item.Word.language_id
 
-                    if (!grouped[key]) {
-                        grouped[key] = {
-                            theme_id: wt.theme_id,
-                            language_id: item.Word.language_id,
-                            theme_name: wt.Theme.name,
-                            language_name: item.Word.Language.name,
-                            total_words: 0,
-                            pending: 0,
-                            inprogress: 0,
-                            valid: 0,
-                            invalid: 0,
-                            fixed: 0,
-                            last_checked: null
-                        }
+                if (!grouped[key]) {
+                    grouped[key] = {
+                        language_id: item.Word.language_id,
+                        language_name: item.Word.Language.name,
+                        total_words: 0,
+                        pending: 0,
+                        inprogress: 0,
+                        valid: 0,
+                        invalid: 0,
+                        fixed: 0,
+                        wontfix: 0,
+                        last_checked: null
                     }
+                }
 
-                    grouped[key].total_words++
+                grouped[key].total_words++
 
-                    const status = item.status_id.toLowerCase()
-                    if (status === 'pending') grouped[key].pending++
-                    else if (status === 'inprogress') grouped[key].inprogress++
-                    else if (status === 'valid') grouped[key].valid++
-                    else if (status === 'invalid') grouped[key].invalid++
-                    else if (status === 'fixed') grouped[key].fixed++
+                const status = item.status_id.toLowerCase()
+                if (status === 'pending') grouped[key].pending++
+                else if (status === 'inprogress') grouped[key].inprogress++
+                else if (status === 'valid') grouped[key].valid++
+                else if (status === 'invalid') grouped[key].invalid++
+                else if (status === 'fixed') grouped[key].fixed++
+                else if (status === 'wontfix') grouped[key].wontfix++
 
-                    if (item.last_checked_at) {
-                        if (!grouped[key].last_checked || item.last_checked_at > grouped[key].last_checked) {
-                            grouped[key].last_checked = item.last_checked_at
-                        }
+                if (item.last_checked_at) {
+                    if (!grouped[key].last_checked || item.last_checked_at > grouped[key].last_checked) {
+                        grouped[key].last_checked = item.last_checked_at
                     }
                 }
             }
@@ -101,21 +93,20 @@ export default function WordValidationPage() {
         }
     }
 
-    async function handleValidateQueue(themeId: number, languageId: string, themeName: string, langName: string) {
-        const key = `${themeId}_${languageId}`
-        setPopulating(key) // Reusing this state for the loading indicator
+    async function handleValidateQueue(languageId: string, langName: string) {
+        setPopulating(languageId)
 
         try {
             const response = await fetch('/api/word-validation/validate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ themeId, languageId })
+                body: JSON.stringify({ languageId })
             })
 
             const result = await response.json()
 
             if (result.success) {
-                alert(`Validation completed for ${themeName} (${langName})!\n\n✓ ${result.validated} words validated\n✓ ${result.valid} valid\n✗ ${result.invalid} invalid`)
+                alert(`Validation completed for ${langName}!\n\n✓ ${result.validated} words validated\n✓ ${result.valid} valid\n✗ ${result.invalid} invalid`)
                 fetchStats()
             } else {
                 alert('Validation failed: ' + result.error)
@@ -174,13 +165,12 @@ export default function WordValidationPage() {
     const filteredStats = stats.filter(stat => {
         if (!searchTerm) return true
         const search = searchTerm.toLowerCase()
-        return stat.theme_name.toLowerCase().includes(search) ||
-            stat.language_name.toLowerCase().includes(search)
+        return stat.language_name.toLowerCase().includes(search)
     })
 
     function getProgressPercentage(stat: ValidationStats): number {
         if (stat.total_words === 0) return 0
-        const completed = stat.valid + stat.invalid + stat.fixed
+        const completed = stat.valid + stat.invalid + stat.fixed + stat.wontfix
         return (completed / stat.total_words) * 100
     }
 
@@ -200,8 +190,8 @@ export default function WordValidationPage() {
                         onClick={handleStartAllValidations}
                         disabled={isValidatingAll || stats.reduce((sum, s) => sum + s.pending, 0) === 0}
                         className={`px-6 py-3 rounded-md font-medium transition-colors ${isValidatingAll || stats.reduce((sum, s) => sum + s.pending, 0) === 0
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                : 'bg-green-600 text-white hover:bg-green-700'
+                            ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                            : 'bg-green-600 text-white hover:bg-green-700'
                             }`}
                     >
                         {isValidatingAll ? (
@@ -229,7 +219,7 @@ export default function WordValidationPage() {
             <div className="bg-gray-800 p-4 rounded-lg mb-6 border border-gray-700">
                 <input
                     type="text"
-                    placeholder="🔍 Search by theme or language..."
+                    placeholder="🔍 Search by language..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -237,7 +227,7 @@ export default function WordValidationPage() {
             </div>
 
             <div className="mb-4 text-sm text-gray-400">
-                Showing {filteredStats.length} theme/language combinations
+                Showing {filteredStats.length} languages
             </div>
 
             {/* Stats Grid */}
@@ -249,7 +239,7 @@ export default function WordValidationPage() {
                 ) : (
                     filteredStats.map((stat) => {
                         const progress = getProgressPercentage(stat)
-                        const key = `${stat.theme_id}_${stat.language_id}`
+                        const key = stat.language_id
                         const isPopulating = populating === key
 
                         return (
@@ -261,10 +251,10 @@ export default function WordValidationPage() {
                                 <div className="flex justify-between items-start mb-3">
                                     <div>
                                         <h3 className="text-lg font-semibold text-white">
-                                            {stat.theme_name}
+                                            {stat.language_name}
                                         </h3>
                                         <div className="text-sm text-gray-400 mt-1">
-                                            🌍 {stat.language_name}
+                                            🌍 {stat.language_id}
                                         </div>
                                     </div>
                                     <div className="text-right">
@@ -280,7 +270,7 @@ export default function WordValidationPage() {
                                     <div className="flex justify-between text-sm text-gray-400 mb-1">
                                         <span>Validation Progress</span>
                                         <span className="font-medium text-white">
-                                            {stat.valid + stat.invalid + stat.fixed} / {stat.total_words}
+                                            {stat.valid + stat.invalid + stat.fixed + stat.wontfix} / {stat.total_words}
                                         </span>
                                     </div>
                                     <div className="w-full bg-gray-700 rounded-full h-2">
@@ -295,7 +285,7 @@ export default function WordValidationPage() {
                                 </div>
 
                                 {/* Stats Grid */}
-                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm mb-3">
+                                <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-sm mb-3">
                                     <div className="bg-yellow-900/30 p-2 rounded border border-yellow-700/50">
                                         <div className="text-yellow-400">Pending</div>
                                         <div className="text-white font-semibold">{stat.pending}</div>
@@ -316,6 +306,10 @@ export default function WordValidationPage() {
                                         <div className="text-purple-400">Fixed</div>
                                         <div className="text-white font-semibold">{stat.fixed}</div>
                                     </div>
+                                    <div className="bg-gray-750 p-2 rounded">
+                                        <div className="text-gray-400">Won't Fix</div>
+                                        <div className="text-white font-semibold">{stat.wontfix}</div>
+                                    </div>
                                 </div>
 
                                 {/* Last Checked */}
@@ -327,7 +321,7 @@ export default function WordValidationPage() {
 
                                 {/* Action Button */}
                                 <button
-                                    onClick={() => handleValidateQueue(stat.theme_id, stat.language_id, stat.theme_name, stat.language_name)}
+                                    onClick={() => handleValidateQueue(stat.language_id, stat.language_name)}
                                     disabled={populating === key || stat.pending === 0}
                                     className={`w-full px-4 py-2 rounded-md font-medium transition-colors flex items-center justify-center gap-2 ${stat.pending === 0
                                         ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
@@ -345,7 +339,6 @@ export default function WordValidationPage() {
                                         <>▶️ Validate ({stat.pending} pending)</>
                                     )}
                                 </button>
-
                             </div>
                         )
                     })
