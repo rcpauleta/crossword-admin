@@ -10,7 +10,7 @@ const supabase = createClient(
 function generateCrosswordGrid(wordList: any[], gridSize: number) {
   const MIN_WORDS = 10
   const MAX_RETRIES = 50000
-  
+
   const grid: (string | null)[][] = Array(gridSize).fill(null).map(() => Array(gridSize).fill(null))
   const placedWords: any[] = []
   let attempts = 0
@@ -199,36 +199,40 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 2. Fetch theme words
+    // 2. Fetch theme words (ONLY VALIDATED)
     const { data: themeWords } = await supabase
       .from('Word')
       .select(`
-        id,
-        normalized_text,
-        display_text,
-        length,
-        difficulty_id,
-        Word_Theme!inner(theme_id)
-      `)
+    id,
+    normalized_text,
+    display_text,
+    length,
+    difficulty_id,
+    Word_Theme!inner(theme_id),
+    WordValidationQueue!inner(status_id)
+  `)
       .eq('Word_Theme.theme_id', config.theme_id)
       .lte('difficulty_id', config.difficulty_id)
       .eq('language_id', config.language_id)
+      .in('WordValidationQueue.status_id', ['Valid', 'Fixed'])
 
-    // 3. Fetch generic/filler words
+    // 3. Fetch generic/filler words (ONLY VALIDATED)
     const { data: fillerWords } = await supabase
       .from('Word')
       .select(`
-        id,
-        normalized_text,
-        display_text,
-        length,
-        difficulty_id,
-        Word_Theme!inner(theme_id, Theme!inner(is_generic_builder))
-      `)
+    id,
+    normalized_text,
+    display_text,
+    length,
+    difficulty_id,
+    Word_Theme!inner(theme_id, Theme!inner(is_generic_builder)),
+    WordValidationQueue!inner(status_id)
+  `)
       .eq('Word_Theme.Theme.is_generic_builder', true)
       .eq('language_id', config.language_id)
       .lte('difficulty_id', config.difficulty_id)
       .lte('length', 7)
+      .in('WordValidationQueue.status_id', ['Valid', 'Fixed'])
 
     // 4. Calculate target counts (40% theme, 60% filler)
     const targetCount = config.number_of_words
@@ -255,13 +259,13 @@ export async function POST(request: NextRequest) {
     // 7. Map clues to words
     const wordListForGrid = uniqueWords.map(word => {
       const wordClues = clues?.filter(c => c.word_id === word.id) || []
-      
+
       // Prioritize: Theme match > closest difficulty > random
       const bestClue = wordClues.sort((a, b) => {
         const aThemeMatch = a.theme_id === config.theme_id ? 0 : 1
         const bThemeMatch = b.theme_id === config.theme_id ? 0 : 1
         if (aThemeMatch !== bThemeMatch) return aThemeMatch - bThemeMatch
-        
+
         const aDiff = Math.abs(a.difficulty_id - config.difficulty_id)
         const bDiff = Math.abs(b.difficulty_id - config.difficulty_id)
         return aDiff - bDiff

@@ -12,13 +12,13 @@ export async function POST(request: NextRequest) {
         const { data: queueItems, error: queueError } = await supabase
             .from('WordValidationQueue')
             .select(`
-                WordId,
+                word_id,
                 Word!inner(
                     language_id,
                     Word_Theme!inner(theme_id)
                 )
             `)
-            .eq('StatusId', 'Pending')
+            .eq('status_id', 'Pending')
 
         if (queueError) throw queueError
 

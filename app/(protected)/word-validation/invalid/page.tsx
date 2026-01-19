@@ -111,13 +111,43 @@ export default function InvalidWordsPage() {
             const result = await response.json()
 
             if (result.success) {
-                alert('Word marked as Fixed!')
-                fetchInvalidWords()
+                // Remove from local state immediately - no refresh needed!
+                setWords(prevWords => prevWords.filter(w => w.word_id !== wordId))
             } else {
                 alert('Error: ' + result.error)
             }
         } catch (error) {
             console.error('Error marking as fixed:', error)
+            alert('Error: ' + String(error))
+        } finally {
+            setProcessing(null)
+        }
+    }
+
+    async function handleWontFix(wordId: number) {
+        if (!confirm('Mark this word as "Won\'t Fix"? It will remain invalid but be removed from this review list.')) {
+            return
+        }
+
+        setProcessing(wordId)
+
+        try {
+            const response = await fetch('/api/word-validation/review', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ wordId, action: 'wont_fix' })
+            })
+
+            const result = await response.json()
+
+            if (result.success) {
+                // Remove from local state immediately
+                setWords(prevWords => prevWords.filter(w => w.word_id !== wordId))
+            } else {
+                alert('Error: ' + result.error)
+            }
+        } catch (error) {
+            console.error('Error marking as won\'t fix:', error)
             alert('Error: ' + String(error))
         } finally {
             setProcessing(null)
@@ -310,6 +340,20 @@ export default function InvalidWordsPage() {
                                             </>
                                         ) : (
                                             <>👍 Mark as Valid (Ignore AI)</>
+                                        )}
+                                    </button>
+                                    <button
+                                        onClick={() => handleWontFix(word.word_id)}
+                                        disabled={processing === word.word_id}
+                                        className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 disabled:bg-gray-500 disabled:cursor-not-allowed font-medium transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        {processing === word.word_id ? (
+                                            <>
+                                                <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full"></div>
+                                                Processing...
+                                            </>
+                                        ) : (
+                                            <>🚫 Won't Fix (Keep Invalid)</>
                                         )}
                                     </button>
                                 </div>

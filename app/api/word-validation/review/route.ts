@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
             // User says it's actually valid - mark as Fixed
             const { data, error } = await supabase
                 .from('WordValidationQueue')
-                .update({ 
+                .update({
                     status_id: 'Fixed',
                     last_checked_at: new Date().toISOString()
                 })
@@ -30,6 +30,25 @@ export async function POST(request: NextRequest) {
             }
 
             return NextResponse.json({ success: true, action: 'marked_fixed', updated: data })
+        }
+
+        if (action === 'wont_fix') {
+            // Mark as WontFix - reviewed but intentionally keeping as invalid
+            const { data, error } = await supabase
+                .from('WordValidationQueue')
+                .update({
+                    status_id: 'WontFix',
+                    last_checked_at: new Date().toISOString()
+                })
+                .eq('word_id', wordId)
+                .select()
+
+            if (error) {
+                console.error('Supabase update error:', error)
+                throw error
+            }
+
+            return NextResponse.json({ success: true, action: 'wont_fix' })
         }
 
         if (action === 'accept_suggestion') {
@@ -57,8 +76,8 @@ export async function POST(request: NextRequest) {
                 .single()
 
             if (existingWord) {
-                return NextResponse.json({ 
-                    success: false, 
+                return NextResponse.json({
+                    success: false,
                     error: 'duplicate',
                     message: `A word with normalized text "${suggestedNormalized}" already exists for this language. Cannot apply suggestion.`
                 })
@@ -67,7 +86,7 @@ export async function POST(request: NextRequest) {
             // Update the word's normalized_text
             const { error: updateError } = await supabase
                 .from('Word')
-                .update({ 
+                .update({
                     normalized_text: suggestedNormalized.toUpperCase(),
                     length: suggestedNormalized.length
                 })
@@ -80,9 +99,9 @@ export async function POST(request: NextRequest) {
             // Mark as Valid in the queue
             const { error: queueError } = await supabase
                 .from('WordValidationQueue')
-                .update({ 
+                .update({
                     status_id: 'Valid',
-                    last_checked_on: new Date().toISOString()
+                    last_checked_at: new Date().toISOString()
                 })
                 .eq('word_id', wordId)
 
@@ -90,8 +109,8 @@ export async function POST(request: NextRequest) {
                 throw queueError
             }
 
-            return NextResponse.json({ 
-                success: true, 
+            return NextResponse.json({
+                success: true,
                 action: 'suggestion_accepted',
                 newNormalized: suggestedNormalized.toUpperCase()
             })

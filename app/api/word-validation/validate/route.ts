@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
         if (queueError) throw queueError
 
         // Filter to only items that belong to this theme
-        const filteredItems = (queueItems as any[]).filter(item => 
+        const filteredItems = (queueItems as any[]).filter(item =>
             item.Word.Word_Theme.some((wt: any) => wt.theme_id === themeId)
         )
 
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
         const wordIds = filteredItems.map(item => item.word_id)
         await supabase
             .from('WordValidationQueue')
-            .update({ status_id: 'InProgress', last_checked_on: new Date().toISOString() })
+            .update({ status_id: 'InProgress', last_checked_at: new Date().toISOString() })
             .in('word_id', wordIds)
 
         // Prepare word list for AI
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 
         // Build validation prompt
         const systemPrompt = "You are a strict Data Quality Auditor for a crossword puzzle database. Your job is to validate that word entries follow normalization rules. You do NOT create new content. You only verify and report issues."
-        
+
         const userPrompt = `Validate the following list of ${wordList.length} words for language: ${languageISO}.
 
 INPUT DATA:
@@ -135,12 +135,13 @@ IMPORTANT: Return a result object for EVERY input item. The output list length m
         // Update validation queue with results
         let validCount = 0
         let invalidCount = 0
+        let updateErrors = []
 
         for (const result of validationResults) {
             const status = result.is_valid ? 'Valid' : 'Invalid'
             const updateData: any = {
                 status_id: status,
-                last_checked_on: new Date().toISOString()
+                last_checked_at: new Date().toISOString()
             }
 
             if (!result.is_valid) {
@@ -150,23 +151,40 @@ IMPORTANT: Return a result object for EVERY input item. The output list length m
                 }
             }
 
-            await supabase
+            const { data, error } = await supabase
                 .from('WordValidationQueue')
                 .update(updateData)
                 .eq('word_id', result.id)
+                .select()
 
-            if (result.is_valid) {
-                validCount++
+            if (error) {
+                console.error(`Failed to update word ${result.id}:`, error)
+                updateErrors.push({ wordId: result.id, error: error.message })
+            } else if (!data || data.length === 0) {
+                console.warn(`No rows updated for word ${result.id} - word may not be in queue`)
+                updateErrors.push({ wordId: result.id, error: 'No rows updated' })
             } else {
-                invalidCount++
+                console.log(`Updated word ${result.id} to status ${status}`)
+                if (result.is_valid) {
+                    validCount++
+                } else {
+                    invalidCount++
+                }
             }
+        }
+
+        console.log(`Validation complete: ${validCount} valid, ${invalidCount} invalid, ${updateErrors.length} errors`)
+
+        if (updateErrors.length > 0) {
+            console.error('Update errors:', updateErrors)
         }
 
         return NextResponse.json({
             success: true,
             validated: validationResults.length,
             valid: validCount,
-            invalid: invalidCount
+            invalid: invalidCount,
+            errors: updateErrors.length > 0 ? updateErrors : undefined
         })
 
     } catch (error: any) {
@@ -175,7 +193,7 @@ IMPORTANT: Return a result object for EVERY input item. The output list length m
         // Mark items as failed
         try {
             const { themeId, languageId } = await request.json()
-            
+
             const { data: failedItems } = await supabase
                 .from('WordValidationQueue')
                 .select('word_id, Word!inner(language_id, Word_Theme!inner(theme_id))')
@@ -189,13 +207,13 @@ IMPORTANT: Return a result object for EVERY input item. The output list length m
             if (failedIds.length > 0) {
                 await supabase
                     .from('WordValidationQueue')
-                    .update({ 
+                    .update({
                         status_id: 'Pending',
-                        error_log: error.message 
+                        error_log: error.message
                     })
                     .in('word_id', failedIds)
             }
-        } catch {}
+        } catch { }
 
         return NextResponse.json(
             { success: false, error: error.message },
