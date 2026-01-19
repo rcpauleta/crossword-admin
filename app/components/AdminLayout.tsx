@@ -3,6 +3,7 @@
 import { ReactNode, useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 
 type AdminLayoutProps = {
   children: ReactNode
@@ -12,6 +13,7 @@ type AdminLayoutProps = {
 export default function AdminLayout({ children, title }: AdminLayoutProps) {
   const pathname = usePathname()
   const [isSidebarOpen, setIsSidebarOpen] = useState(false) // Changed to false by default
+  const router = useRouter()
 
   // Close sidebar on mobile when route changes
   useEffect(() => {
@@ -28,6 +30,12 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
     { name: 'Generated Puzzles', href: '/puzzles', icon: '🧩' },
     { name: 'Harvest Jobs', href: '/harvest-jobs', icon: '🌾' },
   ]
+
+  function handleLogout() {
+    // Clear cookie
+    document.cookie = 'admin-auth=true; path=/; max-age=0'
+    router.push('/login')
+  }
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -48,6 +56,13 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
             <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-medium">
               A
             </div>
+            <button
+              onClick={handleLogout}
+              className="text-gray-400 hover:text-white text-sm ml-4"
+              title="Logout"
+            >
+              🚪
+            </button>
           </div>
         </div>
       </header>
@@ -71,10 +86,9 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
                   className={`
                     flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium
                     transition-colors
-                    ${
-                      isActive
-                        ? 'bg-blue-600 text-white'
-                        : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                    ${isActive
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-700 hover:text-white'
                     }
                   `}
                 >

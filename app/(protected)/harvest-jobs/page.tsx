@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-import AdminLayout from '../components/AdminLayout'
-import { callOpenRouter } from '@/lib/openrouter'
+import { supabase } from '../../lib/supabase'
+import AdminLayout from '../../components/AdminLayout'
+import { callOpenRouter } from '../../lib/openrouter'
 
 type HarvestJob = {
     id: number
