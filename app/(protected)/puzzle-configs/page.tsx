@@ -1,28 +1,21 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
-import AdminLayout from '../../components/AdminLayout'
+import { supabase } from '@/lib/supabase/supabase'
 
 type PuzzleConfig = {
     id: number
     name: string
     grid_size: number
     number_of_words: number
-    theme_id: number
     language_id: string
-    difficulty_id: string
     created_at: string
-    Theme: { name: string }
     Language: { name: string }
-    Difficulty: { name: string }
 }
 
 export default function PuzzleConfigsPage() {
     const [configs, setConfigs] = useState<PuzzleConfig[]>([])
-    const [themes, setThemes] = useState<any[]>([])
     const [languages, setLanguages] = useState<any[]>([])
-    const [difficulties, setDifficulties] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
     const [isModalOpen, setIsModalOpen] = useState(false)
     const [editingConfig, setEditingConfig] = useState<PuzzleConfig | null>(null)
@@ -31,16 +24,13 @@ export default function PuzzleConfigsPage() {
 
     // Filter states
     const [searchTerm, setSearchTerm] = useState('')
-    const [filterTheme, setFilterTheme] = useState<string>('all')
     const [filterLanguage, setFilterLanguage] = useState<string>('all')
 
     // Form fields
     const [name, setName] = useState('')
     const [gridSize, setGridSize] = useState('15')
     const [numberOfWords, setNumberOfWords] = useState('50')
-    const [themeId, setThemeId] = useState('')
     const [languageId, setLanguageId] = useState('')
-    const [difficultyId, setDifficultyId] = useState('')
 
     useEffect(() => {
         fetchDropdownData()
@@ -48,26 +38,21 @@ export default function PuzzleConfigsPage() {
     }, [])
 
     async function fetchDropdownData() {
-        const [themesRes, languagesRes, difficultiesRes] = await Promise.all([
-            supabase.from('Theme').select('id, name').eq('is_active', true).order('name'),
-            supabase.from('Language').select('ISO, name').eq('is_active', true).order('name'),
-            supabase.from('Difficulty').select('id, name').eq('is_active', true).order('order')
-        ])
+        const { data } = await supabase
+            .from('Language')
+            .select('ISO, name')
+            .order('name')
 
-        if (themesRes.data) setThemes(themesRes.data)
-        if (languagesRes.data) setLanguages(languagesRes.data)
-        if (difficultiesRes.data) setDifficulties(difficultiesRes.data)
+        if (data) setLanguages(data)
     }
 
     async function fetchConfigs() {
         const { data, error } = await supabase
             .from('PuzzleConfig')
             .select(`
-        *,
-        Theme!inner(name),
-        Language!inner(name),
-        Difficulty!inner(name)
-      `)
+                *,
+                Language!inner(name)
+            `)
             .order('created_at', { ascending: false })
 
         if (error) {
@@ -82,7 +67,6 @@ export default function PuzzleConfigsPage() {
         if (searchTerm && !config.name.toLowerCase().includes(searchTerm.toLowerCase())) {
             return false
         }
-        if (filterTheme !== 'all' && config.theme_id.toString() !== filterTheme) return false
         if (filterLanguage !== 'all' && config.language_id !== filterLanguage) return false
         return true
     })
@@ -98,9 +82,7 @@ export default function PuzzleConfigsPage() {
         setName(config.name)
         setGridSize(config.grid_size.toString())
         setNumberOfWords(config.number_of_words.toString())
-        setThemeId(config.theme_id.toString())
         setLanguageId(config.language_id)
-        setDifficultyId(config.difficulty_id)
         setIsModalOpen(true)
     }
 
@@ -114,9 +96,7 @@ export default function PuzzleConfigsPage() {
         setName('')
         setGridSize('15')
         setNumberOfWords('50')
-        setThemeId('')
         setLanguageId('')
-        setDifficultyId('')
     }
 
     async function handleSubmit(e: React.FormEvent) {
@@ -127,9 +107,7 @@ export default function PuzzleConfigsPage() {
             name,
             grid_size: parseInt(gridSize),
             number_of_words: parseInt(numberOfWords),
-            theme_id: parseInt(themeId),
             language_id: languageId,
-            difficulty_id: difficultyId
         }
 
         let error
@@ -164,7 +142,7 @@ export default function PuzzleConfigsPage() {
         setGeneratingConfigId(config.id)
 
         try {
-            const response = await fetch('/api/generate-puzzle', {
+            const response = await fetch('/api/puzzles/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ configId: config.id })
@@ -190,10 +168,16 @@ export default function PuzzleConfigsPage() {
         }
     }
 
-    if (loading) return <AdminLayout title="Puzzle Configs"><div className="text-gray-400">Loading configs...</div></AdminLayout>
+    if (loading) {
+        return (
+            <div className="container mx-auto px-4 py-8">
+                <div className="text-gray-400">Loading configs...</div>
+            </div>
+        )
+    }
 
     return (
-        <AdminLayout title="Puzzle Configs">
+        <div className="container mx-auto px-4 py-8">
             <div className="max-w-7xl mx-auto">
                 <div className="flex justify-between items-center mb-6">
                     <h1 className="text-3xl font-bold text-white">Puzzle Configurations</h1>
@@ -207,7 +191,7 @@ export default function PuzzleConfigsPage() {
 
                 {/* Filters */}
                 <div className="bg-gray-800 p-4 rounded-lg mb-6 border border-gray-700">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                             <input
                                 type="text"
@@ -219,21 +203,9 @@ export default function PuzzleConfigsPage() {
                         </div>
                         <div>
                             <select
-                                value={filterTheme}
-                                onChange={(e) => setFilterTheme(e.target.value)}
-                                className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
-                            >
-                                <option value="all">All Themes</option>
-                                {themes.map(theme => (
-                                    <option key={theme.id} value={theme.id}>{theme.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <select
                                 value={filterLanguage}
                                 onChange={(e) => setFilterLanguage(e.target.value)}
-                                className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none cursor-pointer"
+                                className="w-full h-11 px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                             >
                                 <option value="all">All Languages</option>
                                 {languages.map(lang => (
@@ -270,9 +242,7 @@ export default function PuzzleConfigsPage() {
                                                 {config.name}
                                             </h3>
                                             <div className="flex items-center gap-4 mb-2 text-sm">
-                                                <span className="text-gray-300">🎨 {config.Theme.name}</span>
                                                 <span className="text-gray-300">🌍 {config.Language.name}</span>
-                                                <span className="text-gray-300">⚡ {config.Difficulty.name}</span>
                                             </div>
                                             <div className="flex gap-4 text-sm text-gray-500">
                                                 <span>Grid: {config.grid_size}x{config.grid_size}</span>
@@ -336,57 +306,21 @@ export default function PuzzleConfigsPage() {
                                     />
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-1">
-                                            Theme *
-                                        </label>
-                                        <select
-                                            required
-                                            value={themeId}
-                                            onChange={(e) => setThemeId(e.target.value)}
-                                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-                                        >
-                                            <option value="">Select...</option>
-                                            {themes.map(theme => (
-                                                <option key={theme.id} value={theme.id}>{theme.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-1">
-                                            Language *
-                                        </label>
-                                        <select
-                                            required
-                                            value={languageId}
-                                            onChange={(e) => setLanguageId(e.target.value)}
-                                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-                                        >
-                                            <option value="">Select...</option>
-                                            {languages.map(lang => (
-                                                <option key={lang.ISO} value={lang.ISO}>{lang.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-300 mb-1">
-                                            Difficulty *
-                                        </label>
-                                        <select
-                                            required
-                                            value={difficultyId}
-                                            onChange={(e) => setDifficultyId(e.target.value)}
-                                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-                                        >
-                                            <option value="">Select...</option>
-                                            {difficulties.map(diff => (
-                                                <option key={diff.id} value={diff.id}>{diff.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-1">
+                                        Language *
+                                    </label>
+                                    <select
+                                        required
+                                        value={languageId}
+                                        onChange={(e) => setLanguageId(e.target.value)}
+                                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                                    >
+                                        <option value="">Select...</option>
+                                        {languages.map(lang => (
+                                            <option key={lang.ISO} value={lang.ISO}>{lang.name}</option>
+                                        ))}
+                                    </select>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-4">
@@ -446,6 +380,6 @@ export default function PuzzleConfigsPage() {
                     </div>
                 )}
             </div>
-        </AdminLayout>
+        </div>
     )
 }

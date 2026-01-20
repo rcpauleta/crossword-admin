@@ -1,10 +1,11 @@
 import type { Metadata } from 'next'
-import { AuthProvider } from './context/AuthContext'  // Changed from '../context/AuthContext'
 import './globals.css'
+import { AuthProvider } from './contexts/AuthContext'
+import { LanguageProvider } from './contexts/LanguageContext'
 
 export const metadata: Metadata = {
-  title: 'Crossword Admin',
-  description: 'Crossword puzzle admin panel',
+  title: 'Crossword PT',
+  description: 'Palavras cruzadas em Português',
 }
 
 export default function RootLayout({
@@ -13,10 +14,12 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="pt">
       <body>
         <AuthProvider>
-          {children}
+          <LanguageProvider>
+            {children}
+          </LanguageProvider>
         </AuthProvider>
       </body>
     </html>

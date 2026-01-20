@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
-import AdminLayout from '../../components/AdminLayout'
+import { supabase } from '@/lib/supabase/supabase'
+import AdminLayout from '@/app/components/AdminLayout'
 
 type Difficulty = {
   id: string
