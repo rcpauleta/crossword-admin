@@ -1,4 +1,4 @@
-import Spellchecker from 'hunspell-spellchecker'
+import Spellchecker, { parse } from 'hunspell-spellchecker'
 import fs from 'fs'
 import path from 'path'
 
@@ -20,7 +20,7 @@ class DictionaryService {
         const dictBuffer = fs.readFileSync(dictPath)
         const affBuffer = fs.readFileSync(affPath)
 
-        const dict = spellchecker.parse({
+        const dict = parse({
             aff: affBuffer,
             dic: dictBuffer
         })
