@@ -54,6 +54,12 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
                 >
                   Puzzles
                 </Link>
+                <Link href="/playground" className="...">
+                  🎮 Playground
+                </Link>
+                <Link href="/playground/my-puzzles" className="...">
+                  📚 Os Meus Puzzles
+                </Link>
               </div>
             </div>
 
@@ -87,8 +93,8 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
                             setShowLangMenu(false)
                           }}
                           className={`w-full text-left px-4 py-2 transition-colors ${selectedLanguage === lang.ISO
-                              ? 'bg-blue-900 text-white'
-                              : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                            ? 'bg-blue-900 text-white'
+                            : 'text-gray-300 hover:bg-gray-700 hover:text-white'
                             }`}
                         >
                           {lang.flag_emoji} {lang.name}

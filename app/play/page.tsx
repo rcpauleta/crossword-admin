@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase/supabase'
 import Link from 'next/link'
 import PublicLayout from '../components/PublicLayout'
 import { useLanguage } from '../contexts/LanguageContext'
-import GlobalLeaderboard from '../components/GlobalLeaderboard'
+import { useAuth } from '../contexts/AuthContext'
 
 type Puzzle = {
   id: number
@@ -17,15 +17,77 @@ type Puzzle = {
   }
 }
 
+type Stats = {
+  totalSolved: number
+  activeToday: number
+  yourBestTime: string | null
+}
+
 export default function PublicPuzzleListPage() {
   const [puzzles, setPuzzles] = useState<Puzzle[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'all' | '15' | '20'>('all')
+  const [stats, setStats] = useState<Stats>({
+    totalSolved: 0,
+    activeToday: 0,
+    yourBestTime: null
+  })
   const { selectedLanguage } = useLanguage()
+  const { user } = useAuth()
 
   useEffect(() => {
     fetchPuzzles()
+    fetchStats()
   }, [selectedLanguage])
+
+  async function fetchStats() {
+    try {
+      // Total puzzles solved (completed)
+      const { count: totalSolved } = await supabase
+        .from('GameSession')
+        .select('*', { count: 'exact', head: true })
+        .not('completed_at', 'is', null)
+
+      // Active players today
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      const { data: activePlayers } = await supabase
+        .from('GameSession')
+        .select('user_id')
+        .gte('updated_at', today.toISOString())
+
+      const uniquePlayers = new Set(activePlayers?.map(p => p.user_id) || [])
+
+      // Your best time (if logged in)
+      let yourBestTime = null
+      if (user) {
+        const { data: userSessions } = await supabase
+          .from('GameSession')
+          .select('completion_time')
+          .eq('user_id', user.id)
+          .not('completed_at', 'is', null)
+          .order('completion_time', { ascending: true })
+          .limit(1)
+
+        if (userSessions && userSessions.length > 0) {
+          const seconds = userSessions[0].completion_time
+          const mins = Math.floor(seconds / 60)
+          const secs = seconds % 60
+          yourBestTime = `${mins}:${secs.toString().padStart(2, '0')}`
+        }
+      }
+
+      setStats({
+        totalSolved: totalSolved || 0,
+        activeToday: uniquePlayers.size,
+        yourBestTime
+      })
+
+    } catch (error) {
+      console.error('Error fetching stats:', error)
+    }
+  }
 
   async function fetchPuzzles() {
     try {
@@ -33,26 +95,29 @@ export default function PublicPuzzleListPage() {
       const { data, error } = await supabase
         .from('GeneratedPuzzle')
         .select(`
-          id, 
-          created_at,
-          puzzle_config_id,
-          PuzzleConfig:puzzle_config_id (
-            name, 
-            grid_size, 
-            language_id
-          )
-        `)
+        id, 
+        created_at,
+        puzzle_config_id,
+        PuzzleConfig:puzzle_config_id (
+          name, 
+          grid_size, 
+          language_id,
+          config_type
+        )
+      `)
         .eq('PuzzleConfig.language_id', selectedLanguage)
         .order('created_at', { ascending: false })
         .limit(50)
 
       if (error) throw error
 
-      // Transform the data to match our Puzzle type (Supabase returns PuzzleConfig as array)
-      const transformedData = (data || []).map(item => ({
-        ...item,
-        PuzzleConfig: Array.isArray(item.PuzzleConfig) ? item.PuzzleConfig[0] : item.PuzzleConfig
-      }))
+      // Transform the data and filter out playground puzzles
+      const transformedData = (data || [])
+        .map(item => ({
+          ...item,
+          PuzzleConfig: Array.isArray(item.PuzzleConfig) ? item.PuzzleConfig[0] : item.PuzzleConfig
+        }))
+        .filter(item => item.PuzzleConfig?.config_type !== 'playground') // Exclude playground
 
       setPuzzles(transformedData)
     } catch (error) {
@@ -81,14 +146,36 @@ export default function PublicPuzzleListPage() {
     <PublicLayout>
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
-          <h1 className="text-4xl font-bold text-white mb-2">Escolha um Puzzle</h1>
-          <p className="text-gray-400 mb-8">
-            {filteredPuzzles.length} puzzles disponíveis
-          </p>
+          {/* Stats Summary Bar */}
+          <div className="grid grid-cols-3 gap-4 mb-8">
+            <div className="bg-gray-800 rounded-lg p-4 text-center">
+              <p className="text-3xl font-bold text-blue-400">{stats.totalSolved}</p>
+              <p className="text-sm text-gray-400">Puzzles Resolvidos</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-4 text-center">
+              <p className="text-3xl font-bold text-green-400">{stats.activeToday}</p>
+              <p className="text-sm text-gray-400">Jogadores Ativos Hoje</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-4 text-center">
+              <p className="text-3xl font-bold text-purple-400">{stats.yourBestTime || '--'}</p>
+              <p className="text-sm text-gray-400">Teu Melhor Tempo</p>
+            </div>
+          </div>
 
-          {/* Global Leaderboard */}
-          <div className="mb-12">
-            <GlobalLeaderboard />
+          {/* Header with Leaderboard Link */}
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h1 className="text-4xl font-bold text-white mb-2">Escolha um Puzzle</h1>
+              <p className="text-gray-400">
+                {filteredPuzzles.length} puzzles disponíveis
+              </p>
+            </div>
+            <Link
+              href="/leaderboard"
+              className="text-blue-400 hover:text-blue-300 font-medium flex items-center gap-2 transition-colors"
+            >
+              🏆 Ver Leaderboard →
+            </Link>
           </div>
 
           {/* Filter */}
@@ -96,8 +183,8 @@ export default function PublicPuzzleListPage() {
             <button
               onClick={() => setFilter('all')}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === 'all'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
             >
               Todos
@@ -105,8 +192,8 @@ export default function PublicPuzzleListPage() {
             <button
               onClick={() => setFilter('15')}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === '15'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
             >
               15×15
@@ -114,8 +201,8 @@ export default function PublicPuzzleListPage() {
             <button
               onClick={() => setFilter('20')}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === '20'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
             >
               20×20
@@ -151,7 +238,7 @@ export default function PublicPuzzleListPage() {
           {filteredPuzzles.length === 0 && (
             <div className="text-center py-16">
               <div className="text-6xl mb-4">🤔</div>
-              <p className="text-gray-400">Nenhum puzzle encontrado para este idioma</p>
+              <p className="text-gray-400">Nenhum puzzle encontrado</p>
             </div>
           )}
         </div>

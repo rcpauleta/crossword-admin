@@ -174,7 +174,7 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { configId, languageId, gridSize, maxWords, difficulty } = body
+    const { configId, languageId, gridSize, maxWords, difficulty, isPlayground, userId } = body
 
     let config: any = null
     let targetLanguage = languageId || 'PT-PT'
@@ -182,8 +182,27 @@ export async function POST(request: NextRequest) {
     let targetWordCount = maxWords || 30
     let targetDifficulty = difficulty || 'medium'
 
-    // If configId is provided, fetch config
-    if (configId) {
+    // If playground mode, get the playground config
+    if (isPlayground) {
+      const { data: playgroundConfig, error: configError } = await supabase
+        .from('PuzzleConfig')
+        .select('*')
+        .eq('config_type', 'playground')
+        .eq('language_id', targetLanguage)
+        .single()
+
+      if (configError || !playgroundConfig) {
+        return NextResponse.json(
+          { success: false, error: 'Playground config not found' },
+          { status: 404 }
+        )
+      }
+
+      config = playgroundConfig
+      // Use custom settings from request
+    }
+    // If configId is provided, fetch that specific config
+    else if (configId) {
       const { data: configData, error: configError } = await supabase
         .from('PuzzleConfig')
         .select('*')
@@ -201,7 +220,14 @@ export async function POST(request: NextRequest) {
       targetLanguage = config.language_id
       targetGridSize = config.grid_size
       targetWordCount = config.number_of_words || 30
-      targetDifficulty = config.difficulty_level || 'medium'
+      targetDifficulty = config.difficulty_level
+    }
+    // Default mode (fallback)
+    else {
+      return NextResponse.json(
+        { success: false, error: 'Must provide configId or isPlayground flag' },
+        { status: 400 }
+      )
     }
 
     console.log('Generating puzzle:', { targetLanguage, targetGridSize, targetWordCount, targetDifficulty })
@@ -227,7 +253,7 @@ export async function POST(request: NextRequest) {
       normalized: word.normalized_text.toUpperCase(),
       word: word.display_text,
       display_word: word.display_text,
-      clue: word.clue 
+      clue: word.clue
     }))
 
     if (wordListForGrid.length < 10) {
@@ -252,17 +278,27 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Save to GeneratedPuzzle
+    // Save to GeneratedPuzzle with custom settings if playground
+    const puzzleData: any = {
+      puzzle_config_id: config.id,
+      grid_JSON: JSON.stringify(grid),
+      words_JSON: JSON.stringify(placedWords),
+      grid_density: gridDensity,
+      language_id: targetLanguage,
+      total_words: placedWords.length,
+      created_by: userId || null
+    }
+
+    // Add custom settings for playground puzzles
+    if (isPlayground) {
+      puzzleData.custom_grid_size = targetGridSize
+      puzzleData.custom_word_count = targetWordCount
+      puzzleData.custom_difficulty = targetDifficulty
+    }
+
     const { data: puzzle, error: puzzleError } = await supabase
       .from('GeneratedPuzzle')
-      .insert({
-        puzzle_config_id: configId || null,
-        grid_JSON: JSON.stringify(grid),
-        words_JSON: JSON.stringify(placedWords),
-        grid_density: gridDensity,
-        language_id: targetLanguage,
-        total_words: placedWords.length
-      })
+      .insert(puzzleData)
       .select()
       .single()
 
@@ -277,7 +313,8 @@ export async function POST(request: NextRequest) {
         id: puzzle.id,
         totalWords: placedWords.length,
         gridSize: targetGridSize,
-        gridDensity: gridDensity.toFixed(2) + '%'
+        gridDensity: gridDensity.toFixed(2) + '%',
+        isPlayground: isPlayground || false
       }
     })
 

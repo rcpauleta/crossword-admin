@@ -52,6 +52,7 @@ export default function PlayPuzzlePage() {
         penalty: number
     } | null>(null)
     const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
+    const [isPlayground, setIsPlayground] = useState(false)
 
     // State
     const [elapsedSeconds, setElapsedSeconds] = useState(0)
@@ -212,21 +213,23 @@ export default function PlayPuzzlePage() {
             const { data, error } = await supabase
                 .from('GeneratedPuzzle')
                 .select(`
-                id,
-                created_at,
-                grid_JSON,
-                words_JSON,
-                grid_density,
-                language_id,
-                total_words,
-                puzzle_config_id,
-                PuzzleConfig:puzzle_config_id (
+                    id,
+                    created_at,
+                    grid_JSON,
+                    words_JSON,
+                    grid_density,
+                    language_id,
+                    total_words,
+                    created_by,
+                    puzzle_config_id,
+                    PuzzleConfig:puzzle_config_id (
                     id,
                     name,
                     grid_size,
-                    language_id
-                )
-            `)
+                    language_id,
+                    config_type
+                    )
+                `)
                 .eq('id', params.id)
                 .single()
 
@@ -241,35 +244,49 @@ export default function PlayPuzzlePage() {
                 return
             }
 
+            // Transform the data to handle PuzzleConfig as single object
+            const transformedData = {
+                ...data,
+                PuzzleConfig: Array.isArray(data.PuzzleConfig)
+                    ? data.PuzzleConfig[0]
+                    : data.PuzzleConfig
+            }
+
+            // Check if playground (safely)
+            if (transformedData.PuzzleConfig && transformedData.PuzzleConfig.config_type === 'playground') {
+                setIsPlayground(true)
+            }
+
             // Handle null puzzle_config_id (for daily puzzles)
-            if (!data.PuzzleConfig && data.puzzle_config_id) {
+            if (!transformedData.PuzzleConfig && transformedData.puzzle_config_id) {
                 const { data: configData } = await supabase
                     .from('PuzzleConfig')
                     .select('*')
-                    .eq('id', data.puzzle_config_id)
+                    .eq('id', transformedData.puzzle_config_id)
                     .single()
 
-                data.PuzzleConfig = configData
+                transformedData.PuzzleConfig = configData
             }
 
             // If no config, create a default one from grid data
-            if (!data.PuzzleConfig) {
-                const parsedGrid = JSON.parse(data.grid_JSON)
-                data.PuzzleConfig = [{
+            if (!transformedData.PuzzleConfig) {
+                const parsedGrid = JSON.parse(transformedData.grid_JSON)
+                transformedData.PuzzleConfig = {
                     id: null,
-                    name: 'Daily Puzzle',
-                    grid_size: parsedGrid.length, // Infer from actual grid
-                    language_id: data.language_id
-                }]
+                    name: 'Puzzle',
+                    grid_size: parsedGrid.length,
+                    language_id: transformedData.language_id,
+                    config_type: 'event'
+                }
             }
 
-            if (!data.grid_JSON || !data.words_JSON) {
+            if (!transformedData.grid_JSON || !transformedData.words_JSON) {
                 console.error('Missing grid or words')
                 alert('Puzzle data is incomplete')
                 return
             }
 
-            setPuzzle(data)
+            setPuzzle(transformedData)
 
             const parsedGrid = JSON.parse(data.grid_JSON)
             const parsedWords = JSON.parse(data.words_JSON)

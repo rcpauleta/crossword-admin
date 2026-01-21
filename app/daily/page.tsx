@@ -4,268 +4,248 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase/supabase'
 import { useRouter } from 'next/navigation'
 import PublicLayout from '../components/PublicLayout'
-import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
+import { useAuth } from '../contexts/AuthContext'
 
 type DailyPuzzle = {
-  daily_id: number
-  daily_date: string
-  puzzle_id: number
-  language_id: string
-}
-
-type GameSession = {
   id: number
-  user_id: string
+  date: string
   puzzle_id: number
-  started_at: string
-  completed_at: string | null
-  time_seconds: number
-  is_completed: boolean
-  correct_cells: number
-  total_cells: number
-  score_percentage: number
-  grid_state: any
+  difficulty_level: string
+  completed?: boolean
+  completion_time?: number
+  is_clean_run?: boolean
 }
 
-export default function DailyPuzzlePage() {
+export default function DailyPuzzlesPage() {
+  const [puzzles, setPuzzles] = useState<DailyPuzzle[]>([])
   const [loading, setLoading] = useState(true)
-  const [dailyPuzzle, setDailyPuzzle] = useState<DailyPuzzle | null>(null)
-  const [userSession, setUserSession] = useState<GameSession | null>(null)
-  const router = useRouter()
-  const { user } = useAuth()
+  const [streak, setStreak] = useState(0)
   const { selectedLanguage } = useLanguage()
+  const { user } = useAuth()
+  const router = useRouter()
 
   useEffect(() => {
-    fetchDailyPuzzle()
-  }, [user, selectedLanguage])
+    fetchDailyPuzzles()
+    if (user) fetchStreak()
+  }, [selectedLanguage, user])
 
-  async function fetchDailyPuzzle() {
+  async function fetchDailyPuzzles() {
     try {
-      setLoading(true)
-
       const today = new Date().toISOString().split('T')[0]
 
-      // Check if today's daily puzzle exists
-      const { data: existingDaily, error: dailyError } = await supabase
+      // Fetch all 3 daily puzzles for today
+      const { data: dailyPuzzles, error } = await supabase
         .from('DailyPuzzle')
         .select('*')
         .eq('date', today)
         .eq('language_id', selectedLanguage)
-        .single()
+        .order('difficulty_level', { ascending: true })
 
-      if (existingDaily) {
-        // Today's puzzle exists
-        setDailyPuzzle({
-          daily_id: existingDaily.id,
-          daily_date: existingDaily.date,
-          puzzle_id: existingDaily.puzzle_id,
-          language_id: existingDaily.language_id
-        })
+      if (error) throw error
 
-        // Check user session
-        if (user && existingDaily.puzzle_id) {
-          const { data: sessionData } = await supabase
-            .from('GameSession')
-            .select('*')
-            .eq('user_id', user.id)
-            .eq('puzzle_id', existingDaily.puzzle_id)
-            .single()
-
-          setUserSession(sessionData)
-        }
-      } else {
-        // No daily puzzle for today - generate one
-        console.log('No daily puzzle found, generating new one...')
-
-        const generateResponse = await fetch('/api/daily-puzzle/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            date: today,
-            languageId: selectedLanguage
-          })
-        })
-
-        if (!generateResponse.ok) {
-          console.error('Failed to generate daily puzzle')
-          setDailyPuzzle(null)
-          setLoading(false)
-          return
-        }
-
-        const { dailyPuzzle: newDaily } = await generateResponse.json()
-
-        setDailyPuzzle({
-          daily_id: newDaily.id,
-          daily_date: newDaily.date,
-          puzzle_id: newDaily.puzzle_id,
-          language_id: newDaily.language_id
-        })
-
-        // No session yet since puzzle was just created
-        setUserSession(null)
+      // If puzzles don't exist, generate them
+      if (!dailyPuzzles || dailyPuzzles.length === 0) {
+        await generateAllDailyPuzzles()
+        return fetchDailyPuzzles() // Retry
       }
+
+      // Check completion status for logged-in users
+      let puzzlesWithStatus = dailyPuzzles
+      if (user) {
+        const puzzleIds = dailyPuzzles.map(p => p.puzzle_id)
+        const { data: sessions } = await supabase
+          .from('GameSession')
+          .select('puzzle_id, completion_time, is_clean_run, completed_at')
+          .eq('user_id', user.id)
+          .in('puzzle_id', puzzleIds)
+
+        puzzlesWithStatus = dailyPuzzles.map(puzzle => {
+          const session = sessions?.find(s => s.puzzle_id === puzzle.puzzle_id)
+          return {
+            ...puzzle,
+            completed: !!session?.completed_at,
+            completion_time: session?.completion_time,
+            is_clean_run: session?.is_clean_run
+          }
+        })
+      }
+
+      setPuzzles(puzzlesWithStatus)
     } catch (error) {
-      console.error('Error fetching daily puzzle:', error)
-      setDailyPuzzle(null)
+      console.error('Error fetching daily puzzles:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  function handlePlay() {
-    if (dailyPuzzle) {
-      router.push(`/puzzles/${dailyPuzzle.puzzle_id}`)
+  async function generateAllDailyPuzzles() {
+    const difficulties = ['easy', 'medium', 'hard']
+    for (const diff of difficulties) {
+      await fetch('/api/daily-puzzle/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          languageId: selectedLanguage,
+          difficulty: diff
+        })
+      })
     }
+  }
+
+  async function fetchStreak() {
+    // Calculate consecutive days with at least 1 completed puzzle
+    const { data: sessions } = await supabase
+      .from('GameSession')
+      .select('completed_at')
+      .eq('user_id', user!.id)
+      .not('completed_at', 'is', null)
+      .order('completed_at', { ascending: false })
+      .limit(100)
+
+    if (!sessions || sessions.length === 0) {
+      setStreak(0)
+      return
+    }
+
+    // Count consecutive days
+    let currentStreak = 0
+    let lastDate: Date | null = null
+
+    for (const session of sessions) {
+      const sessionDate = new Date(session.completed_at!)
+      sessionDate.setHours(0, 0, 0, 0)
+
+      if (!lastDate) {
+        lastDate = sessionDate
+        currentStreak = 1
+        continue
+      }
+
+      const dayDiff = Math.floor((lastDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24))
+      
+      if (dayDiff === 1) {
+        currentStreak++
+        lastDate = sessionDate
+      } else if (dayDiff > 1) {
+        break
+      }
+    }
+
+    setStreak(currentStreak)
+  }
+
+  function formatTime(seconds?: number) {
+    if (!seconds) return '--'
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const difficultyConfig = {
+    easy: { emoji: '😊', color: 'green', label: 'Fácil' },
+    medium: { emoji: '😐', color: 'yellow', label: 'Médio' },
+    hard: { emoji: '😤', color: 'red', label: 'Difícil' }
   }
 
   if (loading) {
     return (
       <PublicLayout>
         <div className="min-h-screen flex items-center justify-center">
-          <div className="text-xl text-white">A carregar puzzle do dia...</div>
+          <div className="text-xl text-white">A carregar puzzles diários...</div>
         </div>
       </PublicLayout>
     )
   }
-
-  // Add this check
-  if (!dailyPuzzle) {
-    return (
-      <PublicLayout>
-        <div className="container mx-auto px-4 py-12">
-          <div className="max-w-3xl mx-auto text-center">
-            <div className="text-6xl mb-4">😞</div>
-            <h1 className="text-3xl font-bold text-white mb-4">
-              Nenhum Puzzle Disponível
-            </h1>
-            <p className="text-gray-400 mb-6">
-              Ainda não temos puzzles diários para este idioma.
-            </p>
-            <div className="bg-gray-800 rounded-lg p-6 border border-gray-700 text-left">
-              <h3 className="text-white font-semibold mb-3">Para adicionar puzzles:</h3>
-              <ol className="space-y-2 text-gray-300 text-sm list-decimal list-inside">
-                <li>Vá para a página de Languages e adicione palavras</li>
-                <li>Gere pistas para as palavras</li>
-                <li>Crie uma configuração de puzzle</li>
-                <li>Gere puzzles a partir da configuração</li>
-              </ol>
-            </div>
-          </div>
-        </div>
-      </PublicLayout>
-    )
-  }
-
-  const today = new Date().toLocaleDateString('pt-PT', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  })
 
   return (
     <PublicLayout>
-      <div className="container mx-auto px-4 py-12">
-        <div className="max-w-3xl mx-auto">
+      <div className="container mx-auto px-4 py-8">
+        <div className="max-w-4xl mx-auto">
           {/* Header */}
           <div className="text-center mb-12">
-            <div className="inline-block bg-blue-900 bg-opacity-50 px-6 py-2 rounded-full mb-4">
-              <span className="text-blue-300 text-sm font-semibold uppercase tracking-wide">
-                Puzzle Diário
-              </span>
-            </div>
             <h1 className="text-5xl font-bold text-white mb-4">
-              📅 Desafio de Hoje
+              📅 Puzzles Diários
             </h1>
-            <p className="text-gray-400 text-lg capitalize">
-              {today}
+            <p className="text-xl text-gray-300 mb-4">
+              {new Date().toLocaleDateString('pt-PT', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              })}
             </p>
-          </div>
-
-          {/* Puzzle Card */}
-          <div className="bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden shadow-2xl">
-            {/* Stats Banner */}
-            {userSession && (
-              <div className={`px-6 py-3 ${userSession.is_completed
-                ? 'bg-green-900 border-b border-green-700'
-                : 'bg-blue-900 border-b border-blue-700'
-                }`}>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-white">
-                    {userSession.is_completed ? '✅ Completado' : '⏳ Em Progresso'}
-                  </span>
-                  {userSession.is_completed && userSession.time_seconds && (
-                    <span className="text-sm text-green-300">
-                      {userSession.score_percentage}% • {Math.floor(userSession.time_seconds / 60)}m {userSession.time_seconds % 60}s
-                    </span>
-                  )}
-                </div>
+            
+            {user && streak > 0 && (
+              <div className="inline-block bg-gradient-to-r from-orange-600/20 to-red-600/20 border border-orange-500/30 rounded-lg px-6 py-3">
+                <p className="text-2xl font-bold">
+                  🔥 {streak} dia{streak !== 1 ? 's' : ''} de streak!
+                </p>
               </div>
             )}
-
-            <div className="p-8">
-              {/* Info Grid */}
-              <div className="grid grid-cols-3 gap-4 mb-8">
-                <div className="bg-gray-900 rounded-lg p-4 text-center">
-                  <div className="text-3xl mb-2">🧩</div>
-                  <div className="text-gray-400 text-sm">Todos jogam</div>
-                  <div className="text-white font-semibold">o mesmo puzzle</div>
-                </div>
-                <div className="bg-gray-900 rounded-lg p-4 text-center">
-                  <div className="text-3xl mb-2">🏆</div>
-                  <div className="text-gray-400 text-sm">Compete com</div>
-                  <div className="text-white font-semibold">outros jogadores</div>
-                </div>
-                <div className="bg-gray-900 rounded-lg p-4 text-center">
-                  <div className="text-3xl mb-2">⏰</div>
-                  <div className="text-gray-400 text-sm">Novo puzzle</div>
-                  <div className="text-white font-semibold">amanhã</div>
-                </div>
-              </div>
-
-              {/* CTA */}
-              <button
-                onClick={handlePlay}
-                className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold py-5 px-8 rounded-xl text-xl transition-all shadow-lg transform hover:scale-105"
-              >
-                {userSession?.is_completed
-                  ? '🔄 Jogar Novamente'
-                  : userSession
-                    ? '▶️ Continuar'
-                    : '🎮 Jogar Agora'}
-              </button>
-
-              {!user && (
-                <p className="text-center text-gray-400 text-sm mt-4">
-                  💡 <a href="/signup" className="text-blue-400 hover:text-blue-300">Crie uma conta</a> para guardar o seu progresso
-                </p>
-              )}
-            </div>
           </div>
 
-          {/* How it works */}
-          <div className="mt-12 bg-gray-800 bg-opacity-50 rounded-lg p-6 border border-gray-700">
-            <h3 className="text-white font-semibold mb-4">Como funciona o Puzzle Diário?</h3>
-            <ul className="space-y-2 text-gray-300 text-sm">
-              <li className="flex items-start gap-2">
-                <span className="text-blue-400">•</span>
-                Todos os dias, um novo puzzle é disponibilizado
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-blue-400">•</span>
-                Todos os jogadores resolvem o mesmo puzzle
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-blue-400">•</span>
-                O teu tempo e pontuação são guardados
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-blue-400">•</span>
-                Compete para ser o mais rápido do dia!
-              </li>
-            </ul>
+          {/* Daily Puzzles Grid */}
+          <div className="grid gap-6 mb-8">
+            {puzzles.map((puzzle) => {
+              const config = difficultyConfig[puzzle.difficulty_level as keyof typeof difficultyConfig]
+              
+              return (
+                <div
+                  key={puzzle.id}
+                  className={`bg-gradient-to-r from-${config.color}-600/10 to-${config.color}-500/5 border border-${config.color}-500/30 rounded-xl p-6 transition-all hover:scale-[1.02] ${
+                    puzzle.completed ? 'opacity-75' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="text-5xl">{config.emoji}</div>
+                      <div>
+                        <h3 className="text-2xl font-bold text-white mb-1">
+                          {config.label}
+                        </h3>
+                        {puzzle.completed ? (
+                          <div className="flex items-center gap-4 text-sm">
+                            <span className="text-green-400 font-medium">✓ Completo</span>
+                            <span className="text-gray-400">
+                              {formatTime(puzzle.completion_time)}
+                            </span>
+                            {puzzle.is_clean_run && (
+                              <span className="bg-green-600 px-2 py-1 rounded text-xs">
+                                999 Dicas
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-gray-400">Completa o desafio de hoje</p>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <button
+                      onClick={() => router.push(`/puzzles/${puzzle.puzzle_id}`)}
+                      className={`px-8 py-4 rounded-lg font-bold text-lg transition-all ${
+                        puzzle.completed
+                          ? 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                          : `bg-${config.color}-600 hover:bg-${config.color}-700 text-white shadow-lg hover:scale-105`
+                      }`}
+                    >
+                      {puzzle.completed ? 'Jogar Novamente' : 'Jogar →'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Browse More Link */}
+          <div className="text-center">
+            <a
+              href="/play"
+              className="inline-block text-blue-400 hover:text-blue-300 font-medium text-lg"
+            >
+              📚 Ver Todos os Puzzles →
+            </a>
           </div>
         </div>
       </div>
