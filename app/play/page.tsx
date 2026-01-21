@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase/supabase'
 import Link from 'next/link'
 import PublicLayout from '../components/PublicLayout'
 import { useLanguage } from '../contexts/LanguageContext'
+import GlobalLeaderboard from '../components/GlobalLeaderboard'
 
 type Puzzle = {
   id: number
@@ -46,13 +47,13 @@ export default function PublicPuzzleListPage() {
         .limit(50)
 
       if (error) throw error
-      
+
       // Transform the data to match our Puzzle type (Supabase returns PuzzleConfig as array)
       const transformedData = (data || []).map(item => ({
         ...item,
         PuzzleConfig: Array.isArray(item.PuzzleConfig) ? item.PuzzleConfig[0] : item.PuzzleConfig
       }))
-      
+
       setPuzzles(transformedData)
     } catch (error) {
       console.error('Error fetching puzzles:', error)
@@ -85,35 +86,37 @@ export default function PublicPuzzleListPage() {
             {filteredPuzzles.length} puzzles disponíveis
           </p>
 
+          {/* Global Leaderboard */}
+          <div className="mb-12">
+            <GlobalLeaderboard />
+          </div>
+
           {/* Filter */}
           <div className="flex gap-2 mb-6">
             <button
               onClick={() => setFilter('all')}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                filter === 'all'
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === 'all'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-              }`}
+                }`}
             >
               Todos
             </button>
             <button
               onClick={() => setFilter('15')}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                filter === '15'
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === '15'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-              }`}
+                }`}
             >
               15×15
             </button>
             <button
               onClick={() => setFilter('20')}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                filter === '20'
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${filter === '20'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-              }`}
+                }`}
             >
               20×20
             </button>

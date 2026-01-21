@@ -113,7 +113,8 @@ export async function POST(request: NextRequest) {
         const wordsToInsert = newWords.map(word => ({
             display_text: word,
             normalized_text: normalizeText(word),
-            language_id: languageISO
+            language_id: languageISO,
+            length: word.length
         }))
 
         console.log(`Attempting to insert ${wordsToInsert.length} words...`)

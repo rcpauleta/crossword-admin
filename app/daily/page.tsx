@@ -44,34 +44,71 @@ export default function DailyPuzzlePage() {
     try {
       setLoading(true)
 
-      // Get today's daily puzzle for selected language
-      const { data: dailyData, error: dailyError } = await supabase
-        .rpc('get_or_create_daily_puzzle', { lang_iso: selectedLanguage })
+      const today = new Date().toISOString().split('T')[0]
+
+      // Check if today's daily puzzle exists
+      const { data: existingDaily, error: dailyError } = await supabase
+        .from('DailyPuzzle')
+        .select('*')
+        .eq('date', today)
+        .eq('language_id', selectedLanguage)
         .single()
 
-      if (dailyError) {
-        console.error('Daily puzzle error:', dailyError)
-        // Don't throw, just set loading to false and show no puzzle message
-        setDailyPuzzle(null)
-        setLoading(false)
-        return
-      }
+      if (existingDaily) {
+        // Today's puzzle exists
+        setDailyPuzzle({
+          daily_id: existingDaily.id,
+          daily_date: existingDaily.date,
+          puzzle_id: existingDaily.puzzle_id,
+          language_id: existingDaily.language_id
+        })
 
-      setDailyPuzzle(dailyData as DailyPuzzle)
+        // Check user session
+        if (user && existingDaily.puzzle_id) {
+          const { data: sessionData } = await supabase
+            .from('GameSession')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('puzzle_id', existingDaily.puzzle_id)
+            .single()
 
-      // If user is logged in, check their session for today's puzzle
-      if (user && dailyData) {
-        const { data: sessionData } = await supabase
-          .from('GameSession')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('puzzle_id', (dailyData as DailyPuzzle).puzzle_id)
-          .single()
+          setUserSession(sessionData)
+        }
+      } else {
+        // No daily puzzle for today - generate one
+        console.log('No daily puzzle found, generating new one...')
 
-        setUserSession(sessionData)
+        const generateResponse = await fetch('/api/daily-puzzle/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            date: today,
+            languageId: selectedLanguage
+          })
+        })
+
+        if (!generateResponse.ok) {
+          console.error('Failed to generate daily puzzle')
+          setDailyPuzzle(null)
+          setLoading(false)
+          return
+        }
+
+        const { dailyPuzzle: newDaily } = await generateResponse.json()
+
+        setDailyPuzzle({
+          daily_id: newDaily.id,
+          daily_date: newDaily.date,
+          puzzle_id: newDaily.puzzle_id,
+          language_id: newDaily.language_id
+        })
+
+        // No session yet since puzzle was just created
+        setUserSession(null)
       }
     } catch (error) {
       console.error('Error fetching daily puzzle:', error)
+      setDailyPuzzle(null)
     } finally {
       setLoading(false)
     }

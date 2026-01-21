@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase/supabase'
 import { useParams } from 'next/navigation'
 import PublicLayout from '@/app/components/PublicLayout'
 import { useAuth } from '@/app/contexts/AuthContext'
+import Leaderboard from '@/app/components/Leaderboard'
 
 type Cell = {
     letter: string | null
@@ -50,6 +51,7 @@ export default function PlayPuzzlePage() {
         hintsUsed: number
         penalty: number
     } | null>(null)
+    const [leaderboardRefresh, setLeaderboardRefresh] = useState(0)
 
     // State
     const [elapsedSeconds, setElapsedSeconds] = useState(0)
@@ -214,6 +216,9 @@ export default function PlayPuzzlePage() {
                 created_at,
                 grid_JSON,
                 words_JSON,
+                grid_density,
+                language_id,
+                total_words,
                 puzzle_config_id,
                 PuzzleConfig:puzzle_config_id (
                     id,
@@ -236,7 +241,8 @@ export default function PlayPuzzlePage() {
                 return
             }
 
-            if (!data.PuzzleConfig) {
+            // Handle null puzzle_config_id (for daily puzzles)
+            if (!data.PuzzleConfig && data.puzzle_config_id) {
                 const { data: configData } = await supabase
                     .from('PuzzleConfig')
                     .select('*')
@@ -244,6 +250,17 @@ export default function PlayPuzzlePage() {
                     .single()
 
                 data.PuzzleConfig = configData
+            }
+
+            // If no config, create a default one from grid data
+            if (!data.PuzzleConfig) {
+                const parsedGrid = JSON.parse(data.grid_JSON)
+                data.PuzzleConfig = [{
+                    id: null,
+                    name: 'Daily Puzzle',
+                    grid_size: parsedGrid.length, // Infer from actual grid
+                    language_id: data.language_id
+                }]
             }
 
             if (!data.grid_JSON || !data.words_JSON) {
@@ -284,12 +301,7 @@ export default function PlayPuzzlePage() {
     }
 
     async function loadOrCreateSession(puzzleId: number, currentGrid: Cell[][]) {
-        if (!user) {
-            console.log('loadOrCreateSession called but no user')
-            return
-        }
-
-        console.log('Loading session for puzzle:', puzzleId)
+        if (!user) return
 
         const { data: existingSession } = await supabase
             .from('GameSession')
@@ -298,14 +310,15 @@ export default function PlayPuzzlePage() {
             .eq('puzzle_id', puzzleId)
             .single()
 
-        console.log('Session data:', existingSession)
-
         if (existingSession) {
             setSessionId(existingSession.id)
 
+            // Restore hints and penalties
+            setHintsUsed(existingSession.hints_used || 0)
+            setTimePenalty(existingSession.time_penalty || 0)
+
             // Check if already completed
             if (existingSession.is_completed) {
-                // Show final time, don't start timer
                 setElapsedSeconds(existingSession.time_seconds || 0)
                 accumulatedTimeRef.current = existingSession.time_seconds || 0
                 setIsTimerRunning(false)
@@ -321,8 +334,6 @@ export default function PlayPuzzlePage() {
 
             // Restore grid state if available
             if (existingSession.grid_state && Array.isArray(existingSession.grid_state)) {
-                console.log('Restoring saved progress...')
-
                 const restoredGrid = currentGrid.map((row, r) =>
                     row.map((cell, c) => {
                         const savedCell = existingSession.grid_state[r]?.[c]
@@ -350,19 +361,22 @@ export default function PlayPuzzlePage() {
                     puzzle_id: puzzleId,
                     total_cells: totalCells,
                     started_at: new Date().toISOString(),
-                    time_seconds: 0
+                    time_seconds: 0,
+                    hints_used: 0,
+                    time_penalty: 0
                 })
                 .select()
                 .single()
 
             if (newSession) {
                 setSessionId(newSession.id)
-                console.log('New session created:', newSession.id)
 
-                // Start timer for new session
+                // Start fresh
                 accumulatedTimeRef.current = 0
                 sessionStartTimeRef.current = Date.now()
                 setElapsedSeconds(0)
+                setHintsUsed(0)
+                setTimePenalty(0)
                 setIsTimerRunning(true)
             }
         }
@@ -422,24 +436,36 @@ export default function PlayPuzzlePage() {
 
         // If logged in and 100% complete, mark as completed
         if (user && sessionId && scorePercentage === 100) {
-            setIsTimerRunning(false) // Stop timer
+            console.log('Marking puzzle as completed!')
 
-            await supabase
+            setIsTimerRunning(false)
+
+            const updateData = {
+                is_completed: true,
+                completed_at: new Date().toISOString(),
+                correct_cells: correct,
+                total_cells: total,
+                score_percentage: scorePercentage,
+                time_seconds: finalTime,
+                hints_used: hintsUsed,
+                time_penalty: timePenalty,
+                grid_state: grid
+            }
+
+            const { data, error } = await supabase
                 .from('GameSession')
-                .update({
-                    is_completed: true,
-                    completed_at: new Date().toISOString(),
-                    correct_cells: correct,
-                    total_cells: total,
-                    score_percentage: scorePercentage,
-                    time_seconds: finalTime,
-                    hints_used: hintsUsed,
-                    time_penalty: timePenalty,
-                    grid_state: grid
-                })
+                .update(updateData)
                 .eq('id', sessionId)
+                .select()
 
-            // Show completion modal instead of alert
+            if (error) {
+                console.error('Error updating session:', error)
+            } else {
+                // Refresh leaderboard
+                setLeaderboardRefresh(prev => prev + 1)
+            }
+
+            // Show completion modal
             setCompletionStats({
                 time: finalTime,
                 score: scorePercentage,
@@ -472,7 +498,7 @@ export default function PlayPuzzlePage() {
         }
     }
 
-    function revealLetter() {
+    async function revealLetter() {
         if (!selectedCell) {
             alert('Selecione uma célula primeiro')
             return
@@ -497,19 +523,38 @@ export default function PlayPuzzlePage() {
         newGrid[row][col].userAnswer = cell.letter || ''
         setGrid(newGrid)
 
+        // Save immediately
+        if (user && sessionId) {
+            const currentSessionTime = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+            const totalTime = accumulatedTimeRef.current + currentSessionTime
+            const newPenalty = timePenalty + REVEAL_LETTER_PENALTY
+            const newHints = hintsUsed + 1
+
+            await supabase
+                .from('GameSession')
+                .update({
+                    grid_state: newGrid,
+                    time_seconds: totalTime,
+                    hints_used: newHints,
+                    time_penalty: newPenalty
+                })
+                .eq('id', sessionId)
+
+            accumulatedTimeRef.current = totalTime
+            sessionStartTimeRef.current = Date.now()
+        }
+
         // Move to next cell
         moveToNextCell(row, col)
     }
 
-    function revealWord() {
-        console.log('Reveal word called, selectedWord:', selectedWord)
-
+    async function revealWord() {
         if (!selectedWord) {
             alert('Selecione uma palavra clicando numa célula ou pista')
             return
         }
 
-        const confirmMsg = `Revelar palavra completa?\n\nPalavra: ${selectedWord.display_word}\nPista: ${selectedWord.clue}\n\n⏱️ Penalização: +${REVEAL_WORD_PENALTY} segundos`
+        const confirmMsg = `Revelar palavra completa?\n\n⏱️ Penalização: +${REVEAL_WORD_PENALTY} segundos`
         if (!confirm(confirmMsg)) return
 
         // Add penalty
@@ -527,9 +572,30 @@ export default function PlayPuzzlePage() {
             }
         }
         setGrid(newGrid)
+
+        // Save immediately
+        if (user && sessionId) {
+            const currentSessionTime = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+            const totalTime = accumulatedTimeRef.current + currentSessionTime
+            const newPenalty = timePenalty + REVEAL_WORD_PENALTY
+            const newHints = hintsUsed + 1
+
+            await supabase
+                .from('GameSession')
+                .update({
+                    grid_state: newGrid,
+                    time_seconds: totalTime,
+                    hints_used: newHints,
+                    time_penalty: newPenalty
+                })
+                .eq('id', sessionId)
+
+            accumulatedTimeRef.current = totalTime
+            sessionStartTimeRef.current = Date.now()
+        }
     }
 
-    function revealAll() {
+    async function revealAll() {
         const confirmMsg = 'Tem a certeza que quer revelar todas as respostas?\n\nIsto irá desqualificar o seu tempo do leaderboard.'
         if (!confirm(confirmMsg)) return
 
@@ -539,19 +605,67 @@ export default function PlayPuzzlePage() {
                 userAnswer: cell.isBlack ? '' : cell.letter || ''
             }))
         )
-        setGrid(newGrid)
-        setIsTimerRunning(false) // Stop timer - they gave up
-    }
 
-    function clearAll() {
-        const newGrid = grid.map(row =>
-            row.map(cell => ({
-                ...cell,
-                userAnswer: ''
-            }))
-        )
         setGrid(newGrid)
-        setScore(0)
+        setIsTimerRunning(false) // Stop timer
+
+        // Calculate score immediately with the new grid
+        let correct = 0
+        let total = 0
+        newGrid.forEach((row) => {
+            row.forEach((cell) => {
+                if (!cell.isBlack) {
+                    total++
+                    if (cell.userAnswer?.toUpperCase() === cell.letter?.toUpperCase()) {
+                        correct++
+                    }
+                }
+            })
+        })
+
+        const scorePercentage = Math.round((correct / total) * 100)
+        setScore(scorePercentage)
+
+        // Save immediately and mark as completed
+        if (user && sessionId) {
+            const currentSessionTime = Math.floor((Date.now() - sessionStartTimeRef.current) / 1000)
+            const totalTime = accumulatedTimeRef.current + currentSessionTime
+
+            const updateData = {
+                is_completed: true,
+                completed_at: new Date().toISOString(),
+                correct_cells: correct,
+                total_cells: total,
+                score_percentage: scorePercentage,
+                grid_state: newGrid,
+                time_seconds: totalTime,
+                hints_used: 999, // Mark as "revealed all"
+                time_penalty: 99999 // Disqualify from leaderboard
+            }
+
+            console.log('Reveal All - updating session:', updateData)
+
+            const { error } = await supabase
+                .from('GameSession')
+                .update(updateData)
+                .eq('id', sessionId)
+
+            if (error) {
+                console.error('Error updating after reveal all:', error)
+            } else {
+                // Refresh leaderboard
+                setLeaderboardRefresh(prev => prev + 1)
+
+                // Show completion modal
+                setCompletionStats({
+                    time: totalTime,
+                    score: scorePercentage,
+                    hintsUsed: 999,
+                    penalty: 99999
+                })
+                setShowCompletionModal(true)
+            }
+        }
     }
 
     function handleCellClick(row: number, col: number) {
@@ -814,7 +928,7 @@ export default function PlayPuzzlePage() {
         return `${mins}:${secs.toString().padStart(2, '0')}`
     }
 
-    const gridSize = puzzle.PuzzleConfig.grid_size
+    const gridSize = Array.isArray(puzzle.PuzzleConfig) ? puzzle.PuzzleConfig[0].grid_size : puzzle.PuzzleConfig.grid_size
     const acrossWords = words.filter(w => w.dir === 'H')
     const downWords = words.filter(w => w.dir === 'V')
 
@@ -827,7 +941,7 @@ export default function PlayPuzzlePage() {
                         <div className="flex items-center justify-between flex-wrap gap-4">
                             <div>
                                 <h1 className="text-3xl font-bold text-white mb-2">
-                                    {puzzle.PuzzleConfig.name}
+                                    {Array.isArray(puzzle.PuzzleConfig) ? puzzle.PuzzleConfig[0].name : puzzle.PuzzleConfig.name}
                                 </h1>
                                 <p className="text-gray-400">
                                     Grid: {gridSize}x{gridSize} • Words: {words.length}
@@ -915,12 +1029,6 @@ export default function PlayPuzzlePage() {
                                     Reveal All
                                 </button>
                                 <button
-                                    onClick={clearAll}
-                                    className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 flex-1 md:flex-none"
-                                >
-                                    Clear
-                                </button>
-                                <button
                                     onClick={() => setShowAllClues(!showAllClues)}
                                     className="md:hidden px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex-1"
                                 >
@@ -1000,6 +1108,11 @@ export default function PlayPuzzlePage() {
                                     )}
                                 </div>
                             </div>
+                            {puzzle && (
+                                <div className="mt-8">
+                                    <Leaderboard puzzleId={puzzle.id} refreshTrigger={leaderboardRefresh} />
+                                </div>
+                            )}
 
                             {score > 0 && (
                                 <div className="mt-4 p-4 bg-gray-800 rounded-lg text-center">
@@ -1148,6 +1261,11 @@ export default function PlayPuzzlePage() {
                                 <span className="text-white">
                                     {new Date().toLocaleDateString('pt-PT')}
                                 </span>
+                            </div>
+                        </div>
+                        <div className="bg-gray-900 rounded-lg p-4 mb-4">
+                            <div className="text-sm text-gray-400 text-center mb-2">
+                                Verifica a tua posição no leaderboard! 👇
                             </div>
                         </div>
 

@@ -6,7 +6,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
-// Grid generation algorithm (your JS logic converted to TypeScript)
+// Grid generation algorithm (unchanged)
 function generateCrosswordGrid(wordList: any[], gridSize: number) {
   const MIN_WORDS = 10
   const MAX_RETRIES = 50000
@@ -15,7 +15,6 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
   const placedWords: any[] = []
   let attempts = 0
 
-  // Sort: Longest words first
   wordList.sort((a, b) => b.normalized.length - a.normalized.length)
 
   function inBounds(r: number, c: number) {
@@ -34,7 +33,6 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
     if (dir === 'V' && r + len > gridSize) return false
     if (r < 0 || c < 0) return false
 
-    // Check head/tail
     const rBefore = dir === 'H' ? r : r - 1
     const cBefore = dir === 'H' ? c - 1 : c
     const rAfter = dir === 'H' ? r : r + len
@@ -78,7 +76,6 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
       word: wordObj.normalized,
       display_word: wordObj.display_word || wordObj.word,
       clue: wordObj.clue,
-      word_difficulty: wordObj.word_difficulty,
       row: r,
       col: c,
       dir: dir,
@@ -138,7 +135,6 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
 
   solve(0)
 
-  // Sort and assign numbers
   placedWords.sort((a, b) => {
     if (a.row !== b.row) return a.row - b.row
     return a.col - b.col
@@ -160,7 +156,6 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
     }
   }
 
-  // Calculate density
   let filled = 0
   for (let r = 0; r < gridSize; r++) {
     for (let c = 0; c < gridSize; c++) {
@@ -178,109 +173,62 @@ function generateCrosswordGrid(wordList: any[], gridSize: number) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { configId } = await request.json()
+    const body = await request.json()
+    const { configId, languageId, gridSize, maxWords, difficulty } = body
 
-    // 1. Fetch config with related data
-    const { data: config, error: configError } = await supabase
-      .from('PuzzleConfig')
-      .select(`
-        *,
-        Theme!inner(id, name, is_generic_builder),
-        Language!inner(ISO, name),
-        Difficulty!inner(id, order)
-      `)
-      .eq('id', configId)
-      .single()
+    let config: any = null
+    let targetLanguage = languageId || 'PT-PT'
+    let targetGridSize = gridSize || 15
+    let targetWordCount = maxWords || 30
+    let targetDifficulty = difficulty || 'medium'
 
-    if (configError || !config) {
+    // If configId is provided, fetch config
+    if (configId) {
+      const { data: configData, error: configError } = await supabase
+        .from('PuzzleConfig')
+        .select('*')
+        .eq('id', configId)
+        .single()
+
+      if (configError || !configData) {
+        return NextResponse.json(
+          { success: false, error: 'Config not found' },
+          { status: 404 }
+        )
+      }
+
+      config = configData
+      targetLanguage = config.language_id
+      targetGridSize = config.grid_size
+      targetWordCount = config.number_of_words || 30
+      targetDifficulty = config.difficulty_level || 'medium'
+    }
+
+    console.log('Generating puzzle:', { targetLanguage, targetGridSize, targetWordCount, targetDifficulty })
+
+    // Use get_random_words function with proper distribution
+    const { data: words, error: wordsError } = await supabase
+      .rpc('get_random_words', {
+        lang_id: targetLanguage,
+        word_count: targetWordCount * 2,  // Get 2x words for better grid generation
+        diff_level: targetDifficulty
+      })
+
+    if (wordsError || !words || words.length < 10) {
+      console.error('Error fetching words:', wordsError)
       return NextResponse.json(
-        { success: false, error: 'Config not found' },
-        { status: 404 }
+        { success: false, error: `Not enough words with clues found for language ${targetLanguage}. Need at least 10 words.` },
+        { status: 400 }
       )
     }
 
-    // 2. Fetch theme words (ONLY VALIDATED)
-    const { data: themeWords } = await supabase
-      .from('Word')
-      .select(`
-    id,
-    normalized_text,
-    display_text,
-    length,
-    difficulty_id,
-    Word_Theme!inner(theme_id),
-    WordValidationQueue!inner(status_id)
-  `)
-      .eq('Word_Theme.theme_id', config.theme_id)
-      .lte('difficulty_id', config.difficulty_id)
-      .eq('language_id', config.language_id)
-      .in('WordValidationQueue.status_id', ['Valid', 'Fixed'])
-
-    // 3. Fetch generic/filler words (ONLY VALIDATED)
-    const { data: fillerWords } = await supabase
-      .from('Word')
-      .select(`
-    id,
-    normalized_text,
-    display_text,
-    length,
-    difficulty_id,
-    Word_Theme!inner(theme_id, Theme!inner(is_generic_builder)),
-    WordValidationQueue!inner(status_id)
-  `)
-      .eq('Word_Theme.Theme.is_generic_builder', true)
-      .eq('language_id', config.language_id)
-      .lte('difficulty_id', config.difficulty_id)
-      .lte('length', 7)
-      .in('WordValidationQueue.status_id', ['Valid', 'Fixed'])
-
-    // 4. Calculate target counts (40% theme, 60% filler)
-    const targetCount = config.number_of_words
-    const themeTarget = Math.floor(targetCount * 0.4)
-    const fillerTarget = Math.floor(targetCount * 0.8)
-
-    // 5. Shuffle and select
-    const shuffleArray = (arr: any[]) => arr.sort(() => Math.random() - 0.5)
-    const selectedTheme = shuffleArray(themeWords || []).slice(0, themeTarget)
-    const selectedFiller = shuffleArray(fillerWords || []).slice(0, fillerTarget)
-
-    const selectedWords = [...selectedTheme, ...selectedFiller]
-    const uniqueWords = Array.from(new Map(selectedWords.map(w => [w.id, w])).values())
-
-    // 6. Fetch clues for selected words
-    const wordIds = uniqueWords.map(w => w.id)
-    const { data: clues } = await supabase
-      .from('Clue')
-      .select('word_id, clue, difficulty_id, theme_id')
-      .in('word_id', wordIds)
-      .eq('language_id', config.language_id)
-      .lte('difficulty_id', config.difficulty_id)
-
-    // 7. Map clues to words
-    const wordListForGrid = uniqueWords.map(word => {
-      const wordClues = clues?.filter(c => c.word_id === word.id) || []
-
-      // Prioritize: Theme match > closest difficulty > random
-      const bestClue = wordClues.sort((a, b) => {
-        const aThemeMatch = a.theme_id === config.theme_id ? 0 : 1
-        const bThemeMatch = b.theme_id === config.theme_id ? 0 : 1
-        if (aThemeMatch !== bThemeMatch) return aThemeMatch - bThemeMatch
-
-        const aDiff = Math.abs(a.difficulty_id - config.difficulty_id)
-        const bDiff = Math.abs(b.difficulty_id - config.difficulty_id)
-        return aDiff - bDiff
-      })[0]
-
-      if (!bestClue) return null
-
-      return {
-        normalized: word.normalized_text.toUpperCase(),
-        word: word.display_text,
-        display_word: word.display_text,
-        clue: bestClue.clue,
-        word_difficulty: word.difficulty_id
-      }
-    }).filter(Boolean)
+    // Map clues to words
+    const wordListForGrid = words.map((word: any) => ({
+      normalized: word.normalized_text.toUpperCase(),
+      word: word.display_text,
+      display_word: word.display_text,
+      clue: word.clue 
+    }))
 
     if (wordListForGrid.length < 10) {
       return NextResponse.json(
@@ -289,35 +237,46 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 8. Generate grid
+    console.log(`Found ${wordListForGrid.length} words with clues (${words.filter((w: any) => w.word_length <= 5).length} short, ${words.filter((w: any) => w.word_length >= 6 && w.word_length <= 9).length} medium, ${words.filter((w: any) => w.word_length >= 10).length} large)`)
+
+    // Generate grid
     const { grid, placedWords, gridDensity } = generateCrosswordGrid(
-      wordListForGrid.slice(0, targetCount),
-      config.grid_size
+      wordListForGrid.slice(0, targetWordCount),
+      targetGridSize
     )
 
-    // 9. Save to GeneratedPuzzle
+    if (placedWords.length < 10) {
+      return NextResponse.json(
+        { success: false, error: `Could only place ${placedWords.length} words. Grid generation failed.` },
+        { status: 400 }
+      )
+    }
+
+    // Save to GeneratedPuzzle
     const { data: puzzle, error: puzzleError } = await supabase
       .from('GeneratedPuzzle')
       .insert({
-        puzzle_config_id: config.id,
+        puzzle_config_id: configId || null,
         grid_JSON: JSON.stringify(grid),
         words_JSON: JSON.stringify(placedWords),
         grid_density: gridDensity,
-        theme_id: config.theme_id,
-        language_id: config.language_id,
+        language_id: targetLanguage,
         total_words: placedWords.length
       })
       .select()
       .single()
 
-    if (puzzleError) throw puzzleError
+    if (puzzleError) {
+      console.error('Error saving puzzle:', puzzleError)
+      throw puzzleError
+    }
 
     return NextResponse.json({
       success: true,
       puzzle: {
         id: puzzle.id,
         totalWords: placedWords.length,
-        gridSize: config.grid_size,
+        gridSize: targetGridSize,
         gridDensity: gridDensity.toFixed(2) + '%'
       }
     })
